@@ -13,6 +13,12 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     task_track_started=True,
+    beat_schedule={
+        "cleanup-expired-jobs": {
+            "task": "cleanup_expired_jobs",
+            "schedule": 3600.0,  # every hour
+        },
+    },
 )
 
 # Auto-discover tasks

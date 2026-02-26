@@ -5,9 +5,12 @@ from pathlib import Path
 
 import yt_dlp
 
+from app.config import settings
 from app.utils.exceptions import DownloadError
 
 logger = logging.getLogger(__name__)
+
+MAX_DOWNLOAD_BYTES = settings.MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
 
 
 def download_media(
@@ -31,18 +34,23 @@ def download_media(
         "noplaylist": True,
     }
 
-    if progress_callback:
-        def hook(d):
-            if d["status"] == "downloading":
-                total = d.get("total_bytes") or d.get("total_bytes_estimate")
-                if total and total > 0:
-                    downloaded = d.get("downloaded_bytes", 0)
-                    percent = int((downloaded / total) * 100)
-                    progress_callback(min(percent, 100))
-            elif d["status"] == "finished":
+    def hook(d):
+        if d["status"] == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            if total and total > MAX_DOWNLOAD_BYTES:
+                raise DownloadError(
+                    f"File too large ({total / 1024 / 1024:.0f}MB). "
+                    f"Max allowed: {settings.MAX_DOWNLOAD_SIZE_MB}MB"
+                )
+            if progress_callback and total and total > 0:
+                downloaded = d.get("downloaded_bytes", 0)
+                percent = int((downloaded / total) * 100)
+                progress_callback(min(percent, 100))
+        elif d["status"] == "finished":
+            if progress_callback:
                 progress_callback(100)
 
-        ydl_opts["progress_hooks"] = [hook]
+    ydl_opts["progress_hooks"] = [hook]
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

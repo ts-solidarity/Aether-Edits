@@ -5,12 +5,11 @@ import logging
 import subprocess
 from pathlib import Path
 
+from app.config import settings
 from app.utils.exceptions import ConversionError
 from app.utils.formats import AUDIO_FORMATS
 
 logger = logging.getLogger(__name__)
-
-FFMPEG_TIMEOUT = 600  # 10 minutes
 
 
 def _get_duration(input_path: str) -> float | None:
@@ -87,7 +86,7 @@ def convert_media(
                     except (ValueError, ZeroDivisionError):
                         pass
 
-        process.wait(timeout=FFMPEG_TIMEOUT)
+        process.wait(timeout=settings.FFMPEG_TIMEOUT_SECONDS)
 
         if process.returncode != 0:
             stderr = process.stderr.read()
@@ -103,7 +102,7 @@ def convert_media(
 
     except subprocess.TimeoutExpired:
         process.kill()
-        raise ConversionError("Conversion timed out (10 min limit)")
+        raise ConversionError(f"Conversion timed out ({settings.FFMPEG_TIMEOUT_SECONDS}s limit)")
     except ConversionError:
         raise
     except Exception as e:

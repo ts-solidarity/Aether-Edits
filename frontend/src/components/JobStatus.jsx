@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
-import { getJobStatus } from "../api/jobs";
+import React from "react";
+import useJobStream from "../hooks/useJobStream";
 
 const STATUS_LABELS = {
   pending: "Waiting in queue...",
@@ -10,46 +10,31 @@ const STATUS_LABELS = {
 };
 
 export default function JobStatus({ jobId, onComplete, onFailed }) {
-  const [job, setJob] = useState(null);
-  const intervalRef = useRef(null);
+  const job = useJobStream(jobId);
 
-  useEffect(() => {
-    if (!jobId) return;
-
-    const poll = async () => {
-      try {
-        const data = await getJobStatus(jobId);
-        setJob(data);
-        if (data.status === "completed") {
-          clearInterval(intervalRef.current);
-          onComplete?.(data);
-        } else if (data.status === "failed") {
-          clearInterval(intervalRef.current);
-          onFailed?.(data);
-        }
-      } catch {
-        // Ignore poll errors
-      }
-    };
-
-    poll();
-    intervalRef.current = setInterval(poll, 2000);
-    return () => clearInterval(intervalRef.current);
-  }, [jobId, onComplete, onFailed]);
+  // Trigger callbacks based on status
+  React.useEffect(() => {
+    if (!job) return;
+    if (job.status === "completed") onComplete?.(job);
+    else if (job.status === "failed") onFailed?.(job);
+  }, [job?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!job) return null;
 
+  const isComplete = job.status === "completed";
+  const isFailed = job.status === "failed";
+
   return (
-    <div className="job-status">
+    <div className={`job-status ${isComplete ? "job-status--complete" : ""} ${isFailed ? "job-status--failed" : ""}`}>
       <div className="status-label">{STATUS_LABELS[job.status] || job.status}</div>
       <div className="progress-bar-container">
         <div
-          className="progress-bar"
+          className={`progress-bar ${isComplete ? "progress-bar--complete" : ""}`}
           style={{ width: `${job.progress_percent}%` }}
         />
       </div>
       <div className="progress-text">{job.progress_percent}%</div>
-      {job.status === "failed" && job.error_message && (
+      {isFailed && job.error_message && (
         <div className="error-message">{job.error_message}</div>
       )}
     </div>

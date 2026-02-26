@@ -31,7 +31,14 @@ export default function ConvertForm({ onSubmit, disabled }) {
           <FormatSelector value={format} onChange={setFormat} />
         </div>
         <button type="submit" disabled={disabled || !url.trim()}>
-          Convert
+          {disabled ? (
+            <span className="btn-loading">
+              <span className="spinner" />
+              Converting...
+            </span>
+          ) : (
+            "Convert"
+          )}
         </button>
       </div>
     </form>

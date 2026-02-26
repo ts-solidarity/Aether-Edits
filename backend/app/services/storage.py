@@ -11,6 +11,10 @@ def get_converted_path(job_id: str, extension: str) -> Path:
     return settings.converted_dir / f"{job_id}.{extension}"
 
 
+def get_upload_path(job_id: str, extension: str) -> Path:
+    return settings.uploads_dir / f"{job_id}.{extension}"
+
+
 def cleanup_file(path: str | Path) -> None:
     p = Path(path)
     if p.exists():

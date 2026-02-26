@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+from app.config import settings
 from app.database import SessionLocal
 from app.models.conversion_job import ConversionJob
 from app.services.converter import convert_media
@@ -25,8 +26,14 @@ def _update_job(job_id: str, **kwargs):
         db.close()
 
 
-@celery_app.task(name="download_and_convert")
-def download_and_convert(job_id: str):
+@celery_app.task(
+    name="download_and_convert",
+    bind=True,
+    autoretry_for=(DownloadError,),
+    retry_backoff=True,
+    max_retries=settings.CELERY_MAX_RETRIES,
+)
+def download_and_convert(self, job_id: str):
     """Main task: download media from URL and convert to target format."""
     db = SessionLocal()
     try:
@@ -93,6 +100,58 @@ def download_and_convert(job_id: str):
         cleanup_file(actual_download_path)
 
     except (DownloadError, ConversionError) as e:
+        logger.error(f"Job {job_id} failed: {e}")
+        _update_job(job_id, status="failed", error_message=str(e))
+        if isinstance(e, DownloadError):
+            raise  # Let autoretry handle it
+    except Exception as e:
+        logger.exception(f"Job {job_id} unexpected error")
+        _update_job(job_id, status="failed", error_message=f"Unexpected error: {e}")
+
+
+@celery_app.task(name="convert_uploaded_file")
+def convert_uploaded_file(job_id: str):
+    """Convert an uploaded file (skip download, 0-100% is all conversion)."""
+    db = SessionLocal()
+    try:
+        job = db.query(ConversionJob).filter(ConversionJob.id == job_id).first()
+        if not job:
+            logger.error(f"Job {job_id} not found")
+            return
+        uploaded_path = job.downloaded_file_path
+        output_format = job.output_format
+    finally:
+        db.close()
+
+    try:
+        _update_job(job_id, status="converting", progress_percent=0)
+
+        converted_path = get_converted_path(job_id, output_format)
+
+        def convert_progress(percent):
+            _update_job(job_id, progress_percent=min(percent, 99))
+
+        convert_media(
+            input_path=uploaded_path,
+            output_path=converted_path,
+            output_format=output_format,
+            progress_callback=convert_progress,
+        )
+
+        file_size = Path(converted_path).stat().st_size
+
+        _update_job(
+            job_id,
+            status="completed",
+            progress_percent=100,
+            converted_file_path=str(converted_path),
+            file_size_bytes=file_size,
+        )
+
+        # Clean up the uploaded file
+        cleanup_file(uploaded_path)
+
+    except ConversionError as e:
         logger.error(f"Job {job_id} failed: {e}")
         _update_job(job_id, status="failed", error_message=str(e))
     except Exception as e:
