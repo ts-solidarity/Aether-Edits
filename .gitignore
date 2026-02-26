@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+.venv/
+env/
+
+# Environment
+.env
+backend/.env
+
+# Media files (downloads and converted)
+backend/media/downloads/*
+backend/media/converted/*
+!backend/media/downloads/.gitkeep
+!backend/media/converted/.gitkeep
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Alembic
+*.pyc
+
+# Misc
+*.log
+*.rdb
