@@ -11,13 +11,13 @@ const STATUS_LABELS = {
 
 export default function JobStatus({ jobId, onComplete, onFailed }) {
   const job = useJobStream(jobId);
+  const status = job?.status;
 
-  // Trigger callbacks based on status
   React.useEffect(() => {
     if (!job) return;
-    if (job.status === "completed") onComplete?.(job);
-    else if (job.status === "failed") onFailed?.(job);
-  }, [job?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (status === "completed") onComplete?.(job);
+    else if (status === "failed") onFailed?.(job);
+  }, [status, job, onComplete, onFailed]);
 
   if (!job) return null;
 

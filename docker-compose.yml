@@ -5,15 +5,79 @@ services:
       POSTGRES_USER: mediaconv
       POSTGRES_PASSWORD: mediaconv
       POSTGRES_DB: mediaconv
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mediaconv"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   redis:
     image: redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://mediaconv:mediaconv@postgres:5432/mediaconv
+      REDIS_URL: redis://redis:6379/0
+      MEDIA_DIR: /app/media
+      ALLOWED_ORIGINS: http://localhost,http://sancak.test
+    volumes:
+      - media:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-worker:
+    build: ./backend
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      DATABASE_URL: postgresql://mediaconv:mediaconv@postgres:5432/mediaconv
+      REDIS_URL: redis://redis:6379/0
+      MEDIA_DIR: /app/media
+    volumes:
+      - media:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-beat:
+    build: ./backend
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://mediaconv:mediaconv@postgres:5432/mediaconv
+      REDIS_URL: redis://redis:6379/0
+      MEDIA_DIR: /app/media
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  migrate:
+    build: ./backend
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql://mediaconv:mediaconv@postgres:5432/mediaconv
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
     ports:
-      - "6379:6379"
+      - "80:80"
+    depends_on:
+      - backend
 
 volumes:
   pgdata:
+  media:

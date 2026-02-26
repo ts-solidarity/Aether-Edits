@@ -1,0 +1,13 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+media/downloads/*
+media/converted/*
+media/uploads/*
+tests/
+.pytest_cache/
+.coverage
+*.rdb
+dump.rdb
