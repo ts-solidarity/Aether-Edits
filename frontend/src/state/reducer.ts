@@ -1,0 +1,205 @@
+import type { ProjectState } from '../types/project';
+import type { Action } from './actions';
+
+let idCounter = 0;
+function genId(): string {
+  return `${Date.now()}-${++idCounter}`;
+}
+
+export const initialState: ProjectState = {
+  projectName: 'Untitled Project',
+  mediaFiles: {},
+  tracks: {
+    'track-1': { id: 'track-1', name: 'Video 1', type: 'video', clips: [] },
+  },
+  clips: {},
+  trackOrder: ['track-1'],
+  playheadPosition: 0,
+  isPlaying: false,
+  zoomLevel: 50,
+  selectedClipIds: [],
+};
+
+export function projectReducer(state: ProjectState, action: Action): ProjectState {
+  switch (action.type) {
+    case 'ADD_MEDIA_FILE':
+      return {
+        ...state,
+        mediaFiles: { ...state.mediaFiles, [action.payload.id]: action.payload },
+      };
+
+    case 'MARK_MEDIA_UPLOADED':
+      return {
+        ...state,
+        mediaFiles: {
+          ...state.mediaFiles,
+          [action.payload.id]: {
+            ...state.mediaFiles[action.payload.id],
+            uploaded: true,
+            backendId: action.payload.backendId,
+          },
+        },
+      };
+
+    case 'ADD_CLIP': {
+      const { clip, trackId } = action.payload;
+      const track = state.tracks[trackId];
+      if (!track) return state;
+      return {
+        ...state,
+        clips: { ...state.clips, [clip.id]: clip },
+        tracks: {
+          ...state.tracks,
+          [trackId]: { ...track, clips: [...track.clips, clip.id] },
+        },
+      };
+    }
+
+    case 'SPLIT_CLIP': {
+      const { clipId, splitTime } = action.payload;
+      const clip = state.clips[clipId];
+      if (!clip) return state;
+
+      const clipDuration = clip.sourceEnd - clip.sourceStart;
+      const clipEnd = clip.timelineStart + clipDuration;
+      if (splitTime <= clip.timelineStart || splitTime >= clipEnd) return state;
+
+      const offsetInClip = splitTime - clip.timelineStart;
+      const splitSourceTime = clip.sourceStart + offsetInClip;
+
+      const leftId = genId();
+      const rightId = genId();
+
+      const leftClip = { ...clip, id: leftId, sourceEnd: splitSourceTime };
+      const rightClip = {
+        ...clip,
+        id: rightId,
+        sourceStart: splitSourceTime,
+        timelineStart: splitTime,
+      };
+
+      const track = state.tracks[clip.trackId];
+      const clipIndex = track.clips.indexOf(clipId);
+      const newClipList = [...track.clips];
+      newClipList.splice(clipIndex, 1, leftId, rightId);
+
+      const { [clipId]: _, ...restClips } = state.clips;
+
+      return {
+        ...state,
+        clips: { ...restClips, [leftId]: leftClip, [rightId]: rightClip },
+        tracks: {
+          ...state.tracks,
+          [clip.trackId]: { ...track, clips: newClipList },
+        },
+        selectedClipIds: [],
+      };
+    }
+
+    case 'DELETE_CLIP': {
+      const { clipId } = action.payload;
+      const clip = state.clips[clipId];
+      if (!clip) return state;
+
+      const track = state.tracks[clip.trackId];
+      const { [clipId]: _, ...restClips } = state.clips;
+
+      return {
+        ...state,
+        clips: restClips,
+        tracks: {
+          ...state.tracks,
+          [clip.trackId]: {
+            ...track,
+            clips: track.clips.filter((id) => id !== clipId),
+          },
+        },
+        selectedClipIds: state.selectedClipIds.filter((id) => id !== clipId),
+      };
+    }
+
+    case 'MOVE_CLIP': {
+      const { clipId, newTimelineStart, newTrackId } = action.payload;
+      const clip = state.clips[clipId];
+      if (!clip) return state;
+
+      const updatedClip = {
+        ...clip,
+        timelineStart: newTimelineStart,
+        trackId: newTrackId ?? clip.trackId,
+      };
+
+      let newTracks = state.tracks;
+      if (newTrackId && newTrackId !== clip.trackId) {
+        const oldTrack = state.tracks[clip.trackId];
+        const newTrack = state.tracks[newTrackId];
+        if (!newTrack) return state;
+        newTracks = {
+          ...state.tracks,
+          [clip.trackId]: {
+            ...oldTrack,
+            clips: oldTrack.clips.filter((id) => id !== clipId),
+          },
+          [newTrackId]: {
+            ...newTrack,
+            clips: [...newTrack.clips, clipId],
+          },
+        };
+      }
+
+      return {
+        ...state,
+        clips: { ...state.clips, [clipId]: updatedClip },
+        tracks: newTracks,
+      };
+    }
+
+    case 'ADD_TRACK': {
+      const id = `track-${genId()}`;
+      return {
+        ...state,
+        tracks: {
+          ...state.tracks,
+          [id]: { id, name: action.payload.name, type: 'video', clips: [] },
+        },
+        trackOrder: [...state.trackOrder, id],
+      };
+    }
+
+    case 'REMOVE_TRACK': {
+      const { trackId } = action.payload;
+      if (state.trackOrder.length <= 1) return state;
+      const track = state.tracks[trackId];
+      if (!track) return state;
+
+      const { [trackId]: _, ...restTracks } = state.tracks;
+      const restClips = { ...state.clips };
+      track.clips.forEach((clipId) => delete restClips[clipId]);
+
+      return {
+        ...state,
+        tracks: restTracks,
+        clips: restClips,
+        trackOrder: state.trackOrder.filter((id) => id !== trackId),
+        selectedClipIds: state.selectedClipIds.filter(
+          (id) => !track.clips.includes(id)
+        ),
+      };
+    }
+
+    case 'SET_PLAYHEAD':
+      return { ...state, playheadPosition: action.payload };
+
+    case 'SET_PLAYING':
+      return { ...state, isPlaying: action.payload };
+
+    case 'SET_ZOOM':
+      return { ...state, zoomLevel: action.payload };
+
+    case 'SELECT_CLIP':
+      return { ...state, selectedClipIds: action.payload };
+
+    default:
+      return state;
+  }
+}

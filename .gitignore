@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Build
+frontend/dist/
+*.egg-info/
+
+# Media storage
+backend/uploads/
+backend/exports/
+
+# Environment
+.env
+*.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+.coverage
+htmlcov/
+
+# SQLite
+*.db
+*.sqlite3
