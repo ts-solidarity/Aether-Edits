@@ -45,12 +45,27 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
       const { clip, trackId } = action.payload;
       const track = state.tracks[trackId];
       if (!track) return state;
+
+      // Auto-place after last clip if timelineStart is 0 and track has clips
+      let finalClip = clip;
+      if (clip.timelineStart === 0 && track.clips.length > 0) {
+        let maxEnd = 0;
+        for (const cid of track.clips) {
+          const c = state.clips[cid];
+          if (c) {
+            const end = c.timelineStart + (c.sourceEnd - c.sourceStart);
+            if (end > maxEnd) maxEnd = end;
+          }
+        }
+        finalClip = { ...clip, timelineStart: maxEnd };
+      }
+
       return {
         ...state,
-        clips: { ...state.clips, [clip.id]: clip },
+        clips: { ...state.clips, [finalClip.id]: finalClip },
         tracks: {
           ...state.tracks,
-          [trackId]: { ...track, clips: [...track.clips, clip.id] },
+          [trackId]: { ...track, clips: [...track.clips, finalClip.id] },
         },
       };
     }
