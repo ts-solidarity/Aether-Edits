@@ -32,6 +32,9 @@ const TRANSIENT_ACTIONS = new Set<Action['type']>([
   'SET_PLAYING',
   'SET_ZOOM',
   'SELECT_CLIP',
+  'MEDIA_HYDRATED',
+  'SET_MEDIA_STATUS',
+  'SET_MEDIA_HAS_AUDIO',
 ]);
 
 const MAX_HISTORY = 50;

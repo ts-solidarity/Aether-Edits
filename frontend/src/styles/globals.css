@@ -584,6 +584,12 @@ button {
   to { transform: rotate(360deg); }
 }
 
+@keyframes montaj-indet {
+  0%   { transform: translateX(-100%); }
+  50%  { transform: translateX(125%); }
+  100% { transform: translateX(250%); }
+}
+
 /* Empty timeline hint */
 .track-row:empty::after {
   content: 'Drag a file here';

@@ -1,6 +1,74 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useProject } from '../../state/ProjectContext';
-import type { Clip } from '../../types/project';
+import type { Clip, MediaFile } from '../../types/project';
+import { newId } from '../../utils/id';
+import { getThumbnail } from '../../services/thumbnails';
+
+const THUMB_W = 80;
+const THUMB_H = 45;
+
+function ClipFilmStrip({ clip, media, widthPx }: { clip: Clip; media: MediaFile | undefined; widthPx: number }) {
+  const [urls, setUrls] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!media?.file || widthPx < 40) {
+      setUrls([]);
+      return;
+    }
+    const n = Math.max(1, Math.floor(widthPx / THUMB_W));
+    const duration = clip.sourceEnd - clip.sourceStart;
+    const step = duration / Math.max(1, n);
+    const targets = Array.from({ length: n }, (_, i) => clip.sourceStart + step * (i + 0.5));
+
+    let cancelled = false;
+    (async () => {
+      const resolved: string[] = new Array(n);
+      for (let i = 0; i < n; i++) {
+        try {
+          const u = await getThumbnail(clip.mediaFileId, media.file!, targets[i], THUMB_W, THUMB_H);
+          if (cancelled) return;
+          resolved[i] = u;
+          // Progressive paint: update state as thumbs resolve to avoid blank strip during decode.
+          setUrls([...resolved]);
+        } catch {
+          // ignore — a failed thumbnail just stays blank
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clip.mediaFileId, clip.sourceStart, clip.sourceEnd, media?.file, widthPx]);
+
+  if (urls.length === 0) return null;
+  return (
+    <div
+      aria-hidden
+      style={{
+        position: 'absolute',
+        inset: 0,
+        display: 'flex',
+        overflow: 'hidden',
+        pointerEvents: 'none',
+        opacity: 0.55,
+      }}
+    >
+      {urls.map((u, i) => (
+        <div
+          key={i}
+          style={{
+            flex: `0 0 ${THUMB_W}px`,
+            height: '100%',
+            backgroundImage: u ? `url(${u})` : undefined,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+          }}
+        />
+      ))}
+    </div>
+  );
+}
 
 function formatRulerTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -60,7 +128,7 @@ export function TimelinePanel() {
         }
       }
 
-      const clipId = `clip-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const clipId = newId('clip');
       const clip: Clip = {
         id: clipId,
         mediaFileId,
@@ -255,14 +323,17 @@ export function TimelinePanel() {
                       <div
                         key={clipId}
                         className={`clip ${isSelected ? 'selected' : ''}`}
-                        style={{ left, width: Math.max(width, 4) }}
+                        style={{ left, width: Math.max(width, 4), position: 'absolute' }}
                         title={tooltip}
                         onClick={(e) => handleClipClick(e, clipId)}
                         onContextMenu={(e) =>
                           handleClipContextMenu(e, clipId)
                         }
                       >
-                        {width > 60 ? (media?.name ?? 'Clip') : ''}
+                        <ClipFilmStrip clip={clip} media={media} widthPx={width} />
+                        <span style={{ position: 'relative', zIndex: 1, padding: '0 4px' }}>
+                          {width > 60 ? (media?.name ?? 'Clip') : ''}
+                        </span>
                       </div>
                     );
                   })}

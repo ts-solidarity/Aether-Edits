@@ -1,6 +1,8 @@
 import { useRef, useState, useCallback } from 'react';
 import { useProject } from '../../state/ProjectContext';
 import type { MediaFile } from '../../types/project';
+import { newId } from '../../utils/id';
+import { getOrCreateObjectUrl, saveFile } from '../../services/mediaStore';
 
 export function Sidebar() {
   const { state, dispatch } = useProject();
@@ -12,16 +14,25 @@ export function Sidebar() {
     (files: FileList) => {
       Array.from(files).forEach((file) => {
         if (!file.type.startsWith('video/')) return;
-        const id = `media-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        const objectUrl = URL.createObjectURL(file);
+        const id = newId('media');
 
         setLoadingFiles((prev) => new Set(prev).add(id));
 
-        // Use a separate URL for the temp metadata probe
+        // Probe metadata via a temporary <video> + blob URL.
         const probeUrl = URL.createObjectURL(file);
         const video = document.createElement('video');
         video.preload = 'metadata';
-        video.onloadedmetadata = () => {
+
+        const finishLoading = () => {
+          setLoadingFiles((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+        };
+
+        video.onloadedmetadata = async () => {
+          const objectUrl = getOrCreateObjectUrl(id, file);
           const mediaFile: MediaFile = {
             id,
             name: file.name,
@@ -30,25 +41,23 @@ export function Sidebar() {
             duration: video.duration,
             width: video.videoWidth,
             height: video.videoHeight,
-            uploaded: false,
-            backendId: null,
+            status: 'ready',
+            hasAudio: true, // optimistic; confirmed during export probe
           };
           dispatch({ type: 'ADD_MEDIA_FILE', payload: mediaFile });
-          setLoadingFiles((prev) => {
-            const next = new Set(prev);
-            next.delete(id);
-            return next;
-          });
           URL.revokeObjectURL(probeUrl);
+          try {
+            await saveFile(id, file);
+          } catch (err) {
+            // On quota / private-mode failure, mark as missing so user knows this won't persist.
+            console.warn('IDB saveFile failed:', err);
+            dispatch({ type: 'SET_MEDIA_STATUS', payload: { id, status: 'missing' } });
+          }
+          finishLoading();
         };
         video.onerror = () => {
-          URL.revokeObjectURL(objectUrl);
           URL.revokeObjectURL(probeUrl);
-          setLoadingFiles((prev) => {
-            const next = new Set(prev);
-            next.delete(id);
-            return next;
-          });
+          finishLoading();
         };
         video.src = probeUrl;
       });
@@ -128,25 +137,46 @@ export function Sidebar() {
                 </div>
               </div>
             )}
-            {mediaFiles.map((f) => (
-              <div
-                key={f.id}
-                className="file-item"
-                draggable
-                onDragStart={(e) => {
-                  e.dataTransfer.setData('mediaFileId', f.id);
-                }}
-              >
-                <div className="file-item-icon">🎬</div>
-                <div className="file-item-info">
-                  <div className="file-item-name">{f.name}</div>
-                  <div className="file-item-meta">
-                    {`${Math.floor(f.duration / 60)}:${Math.floor(f.duration % 60).toString().padStart(2, '0')}`}
-                    {f.width > 0 && ` · ${f.width}x${f.height}`}
+            {mediaFiles.map((f) => {
+              const statusLabel =
+                f.status === 'hydrating'
+                  ? 'Loading…'
+                  : f.status === 'missing'
+                    ? 'Missing — re-import'
+                    : null;
+              const statusColor =
+                f.status === 'missing' ? 'var(--danger, #ef4444)' : 'var(--text-muted)';
+              return (
+                <div
+                  key={f.id}
+                  className="file-item"
+                  draggable={f.status === 'ready'}
+                  style={{ opacity: f.status === 'ready' ? 1 : 0.6 }}
+                  onDragStart={(e) => {
+                    if (f.status !== 'ready') {
+                      e.preventDefault();
+                      return;
+                    }
+                    e.dataTransfer.setData('mediaFileId', f.id);
+                  }}
+                >
+                  <div className="file-item-icon">🎬</div>
+                  <div className="file-item-info">
+                    <div className="file-item-name">{f.name}</div>
+                    <div className="file-item-meta">
+                      {`${Math.floor(f.duration / 60)}:${Math.floor(f.duration % 60).toString().padStart(2, '0')}`}
+                      {f.width > 0 && ` · ${f.width}x${f.height}`}
+                      {statusLabel && (
+                        <>
+                          {' · '}
+                          <span style={{ color: statusColor }}>{statusLabel}</span>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

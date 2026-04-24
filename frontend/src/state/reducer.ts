@@ -1,10 +1,6 @@
 import type { ProjectState } from '../types/project';
 import type { Action } from './actions';
-
-let idCounter = 0;
-function genId(): string {
-  return `${Date.now()}-${++idCounter}`;
-}
+import { newId } from '../utils/id';
 
 export const initialState: ProjectState = {
   projectName: 'Untitled Project',
@@ -28,18 +24,47 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
         mediaFiles: { ...state.mediaFiles, [action.payload.id]: action.payload },
       };
 
-    case 'MARK_MEDIA_UPLOADED':
+    case 'MEDIA_HYDRATED': {
+      const existing = state.mediaFiles[action.payload.id];
+      if (!existing) return state;
+      if (existing.status === 'ready' && existing.objectUrl === action.payload.objectUrl) return state;
       return {
         ...state,
         mediaFiles: {
           ...state.mediaFiles,
           [action.payload.id]: {
-            ...state.mediaFiles[action.payload.id],
-            uploaded: true,
-            backendId: action.payload.backendId,
+            ...existing,
+            file: action.payload.file,
+            objectUrl: action.payload.objectUrl,
+            status: 'ready',
           },
         },
       };
+    }
+
+    case 'SET_MEDIA_STATUS': {
+      const existing = state.mediaFiles[action.payload.id];
+      if (!existing || existing.status === action.payload.status) return state;
+      return {
+        ...state,
+        mediaFiles: {
+          ...state.mediaFiles,
+          [action.payload.id]: { ...existing, status: action.payload.status },
+        },
+      };
+    }
+
+    case 'SET_MEDIA_HAS_AUDIO': {
+      const existing = state.mediaFiles[action.payload.id];
+      if (!existing || existing.hasAudio === action.payload.hasAudio) return state;
+      return {
+        ...state,
+        mediaFiles: {
+          ...state.mediaFiles,
+          [action.payload.id]: { ...existing, hasAudio: action.payload.hasAudio },
+        },
+      };
+    }
 
     case 'ADD_CLIP': {
       const { clip, trackId } = action.payload;
@@ -82,8 +107,8 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
       const offsetInClip = splitTime - clip.timelineStart;
       const splitSourceTime = clip.sourceStart + offsetInClip;
 
-      const leftId = genId();
-      const rightId = genId();
+      const leftId = newId('clip');
+      const rightId = newId('clip');
 
       const leftClip = { ...clip, id: leftId, sourceEnd: splitSourceTime };
       const rightClip = {
@@ -170,7 +195,7 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
     }
 
     case 'ADD_TRACK': {
-      const id = `track-${genId()}`;
+      const id = newId('track');
       return {
         ...state,
         tracks: {

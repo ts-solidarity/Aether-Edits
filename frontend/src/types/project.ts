@@ -1,13 +1,15 @@
+export type MediaStatus = 'ready' | 'hydrating' | 'missing';
+
 export interface MediaFile {
   id: string;
   name: string;
   objectUrl: string;
-  file: File;
+  file: File | null;
   duration: number;
   width: number;
   height: number;
-  uploaded: boolean;
-  backendId: string | null;
+  status: MediaStatus;
+  hasAudio: boolean;
 }
 
 export interface Clip {

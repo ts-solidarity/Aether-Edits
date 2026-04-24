@@ -1,7 +1,22 @@
+import { useRef, useState } from 'react';
 import { useProject } from '../../state/ProjectContext';
 
 export function TopBar({ onExport }: { onExport: () => void }) {
-  const { dispatch, canUndo, canRedo } = useProject();
+  const { dispatch, canUndo, canRedo, flushSave } = useProject();
+  const [justSaved, setJustSaved] = useState(false);
+  const savedTimerRef = useRef<number | null>(null);
+
+  const handleSave = () => {
+    flushSave();
+    setJustSaved(true);
+    if (savedTimerRef.current !== null) {
+      window.clearTimeout(savedTimerRef.current);
+    }
+    savedTimerRef.current = window.setTimeout(() => {
+      setJustSaved(false);
+      savedTimerRef.current = null;
+    }, 1500);
+  };
 
   return (
     <header className="topbar">
@@ -48,7 +63,9 @@ export function TopBar({ onExport }: { onExport: () => void }) {
       </div>
 
       <div className="topbar-right">
-        <button className="btn btn-secondary">Save</button>
+        <button className="btn btn-secondary" onClick={handleSave}>
+          {justSaved ? 'Saved ✓' : 'Save'}
+        </button>
         <button className="btn btn-primary" onClick={onExport}>Export</button>
       </div>
     </header>

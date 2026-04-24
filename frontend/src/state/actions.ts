@@ -1,8 +1,10 @@
-import type { Clip, MediaFile } from '../types/project';
+import type { Clip, MediaFile, MediaStatus } from '../types/project';
 
 export type Action =
   | { type: 'ADD_MEDIA_FILE'; payload: MediaFile }
-  | { type: 'MARK_MEDIA_UPLOADED'; payload: { id: string; backendId: string } }
+  | { type: 'MEDIA_HYDRATED'; payload: { id: string; file: File; objectUrl: string } }
+  | { type: 'SET_MEDIA_STATUS'; payload: { id: string; status: MediaStatus } }
+  | { type: 'SET_MEDIA_HAS_AUDIO'; payload: { id: string; hasAudio: boolean } }
   | { type: 'ADD_CLIP'; payload: { clip: Clip; trackId: string } }
   | { type: 'SPLIT_CLIP'; payload: { clipId: string; splitTime: number } }
   | { type: 'DELETE_CLIP'; payload: { clipId: string } }

@@ -1,14 +1,30 @@
+import { useEffect, useState } from 'react';
 import { useProject } from '../../state/ProjectContext';
 import { useExport } from '../../hooks/useExport';
+import type { QualityPreset } from '../../services/filterGraph';
 
 interface ExportDialogProps {
   open: boolean;
   onClose: () => void;
 }
 
+const QUALITY_OPTIONS: { value: QualityPreset; label: string; hint: string }[] = [
+  { value: 'fast', label: 'Fast', hint: 'ultrafast · CRF 26 · best for previews' },
+  { value: 'balanced', label: 'Balanced', hint: 'fast preset · CRF 24' },
+  { value: 'quality', label: 'Quality', hint: 'medium preset · CRF 22 · much slower on wasm' },
+];
+
 export function ExportDialog({ open, onClose }: ExportDialogProps) {
-  const { state, dispatch } = useProject();
-  const { exportState, startExportFlow, reset } = useExport(state, dispatch);
+  const { state } = useProject();
+  const { exportState, startExportFlow, reset, readiness } = useExport();
+  const [quality, setQuality] = useState<QualityPreset>('fast');
+
+  // Revoke the download blob URL when the dialog closes or phase leaves 'done'.
+  useEffect(() => {
+    if (!open) {
+      reset();
+    }
+  }, [open, reset]);
 
   if (!open) return null;
 
@@ -17,7 +33,10 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
     onClose();
   };
 
-  const isWorking = exportState.phase === 'uploading' || exportState.phase === 'exporting';
+  const isWorking =
+    exportState.phase === 'waiting' ||
+    exportState.phase === 'loading-core' ||
+    exportState.phase === 'exporting';
   const hasClips = Object.keys(state.clips).length > 0;
 
   return (
@@ -39,7 +58,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
           border: '1px solid var(--border-color)',
           borderRadius: 'var(--radius-lg)',
           padding: 32,
-          width: 420,
+          width: 460,
           maxWidth: '90vw',
           boxShadow: 'var(--shadow-md)',
         }}
@@ -49,41 +68,87 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
 
         {exportState.phase === 'idle' && (
           <>
-            {hasClips ? (
-              <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 20 }}>
-                Your timeline will be rendered as an MP4 video using server-side FFmpeg.
-              </p>
-            ) : (
+            {!hasClips ? (
               <p style={{ fontSize: 13, color: 'var(--warning)', marginBottom: 20 }}>
                 Add clips to the timeline before exporting.
               </p>
+            ) : readiness.missing > 0 ? (
+              <p style={{ fontSize: 13, color: 'var(--warning)', marginBottom: 20 }}>
+                {readiness.missing} media file{readiness.missing > 1 ? 's are' : ' is'} missing — re-import before exporting.
+              </p>
+            ) : readiness.hydrating > 0 ? (
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 20 }}>
+                Loading media from storage…
+              </p>
+            ) : (
+              <>
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
+                  Export runs in your browser with FFmpeg.wasm — nothing is uploaded.
+                </p>
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>
+                    Quality / Speed
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {QUALITY_OPTIONS.map((opt) => (
+                      <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                        <input
+                          type="radio"
+                          name="quality"
+                          value={opt.value}
+                          checked={quality === opt.value}
+                          onChange={() => setQuality(opt.value)}
+                        />
+                        <span>{opt.label}</span>
+                        <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>· {opt.hint}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </>
             )}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button className="btn btn-secondary" onClick={handleClose}>
                 Cancel
               </button>
-              <button className="btn btn-primary" onClick={startExportFlow} disabled={!hasClips}>
+              <button
+                className="btn btn-primary"
+                onClick={() => startExportFlow(quality)}
+                disabled={!hasClips || !readiness.allReady}
+              >
                 Export
               </button>
             </div>
           </>
         )}
 
-        {exportState.phase === 'uploading' && (
+        {exportState.phase === 'waiting' && (
           <>
             <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
-              Uploading media files...
+              Loading media from storage…
             </p>
             <ProgressBar progress={exportState.progress} />
+          </>
+        )}
+
+        {exportState.phase === 'loading-core' && (
+          <>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+              Loading FFmpeg engine (one-time, ~10 MB)…
+            </p>
+            <ProgressBar progress={0} indeterminate />
           </>
         )}
 
         {exportState.phase === 'exporting' && (
           <>
             <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
-              Rendering video...
+              Rendering video…
             </p>
             <ProgressBar progress={exportState.progress} />
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
+              In-browser encoding is CPU-bound and can take several minutes for longer clips.
+            </p>
           </>
         )}
 
@@ -99,7 +164,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               {exportState.downloadUrl && (
                 <a
                   href={exportState.downloadUrl}
-                  download
+                  download="montaj-export.mp4"
                   className="btn btn-primary"
                   style={{ textDecoration: 'none' }}
                 >
@@ -119,7 +184,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               <button className="btn btn-secondary" onClick={handleClose}>
                 Close
               </button>
-              <button className="btn btn-primary" onClick={startExportFlow}>
+              <button className="btn btn-primary" onClick={() => startExportFlow(quality)}>
                 Retry
               </button>
             </div>
@@ -136,7 +201,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
   );
 }
 
-function ProgressBar({ progress }: { progress: number }) {
+function ProgressBar({ progress, indeterminate }: { progress: number; indeterminate?: boolean }) {
   return (
     <div
       style={{
@@ -145,15 +210,17 @@ function ProgressBar({ progress }: { progress: number }) {
         background: 'var(--bg-tertiary)',
         borderRadius: 4,
         overflow: 'hidden',
+        position: 'relative',
       }}
     >
       <div
         style={{
-          width: `${Math.min(progress, 100)}%`,
+          width: indeterminate ? '40%' : `${Math.min(progress, 100)}%`,
           height: '100%',
           background: 'var(--accent-gradient)',
           borderRadius: 4,
           transition: 'width 0.3s ease',
+          animation: indeterminate ? 'montaj-indet 1.2s ease-in-out infinite' : 'none',
         }}
       />
     </div>

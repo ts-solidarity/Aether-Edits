@@ -7,9 +7,14 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "postinstall": "node -e \"const fs=require('fs');const src='node_modules/@ffmpeg/core/dist/esm';const dst='public/ffmpeg';fs.mkdirSync(dst,{recursive:true});for(const f of ['ffmpeg-core.js','ffmpeg-core.wasm']){if(fs.existsSync(src+'/'+f))fs.copyFileSync(src+'/'+f,dst+'/'+f);}\""
   },
   "dependencies": {
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
+    "idb-keyval": "^6.2.2",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },
