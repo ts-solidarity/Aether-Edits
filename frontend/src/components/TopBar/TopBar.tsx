@@ -22,22 +22,9 @@ export function TopBar({ onExport }: { onExport: () => void }) {
     <header className="topbar">
       <div className="topbar-left">
         <div className="topbar-logo">
-          <svg viewBox="0 0 28 28" fill="none">
-            <rect width="28" height="28" rx="6" fill="url(#logo-grad)" />
-            <path
-              d="M8 10l4 4-4 4M14 18h6"
-              stroke="white"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <defs>
-              <linearGradient id="logo-grad" x1="0" y1="0" x2="28" y2="28">
-                <stop stopColor="#7c5cfc" />
-                <stop offset="1" stopColor="#a78bfa" />
-              </linearGradient>
-            </defs>
-          </svg>
+          <div className="topbar-logo-mark" aria-hidden>
+            <span>M</span>
+          </div>
           Montaj
           <span className="topbar-badge">Beta</span>
         </div>

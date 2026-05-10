@@ -486,6 +486,55 @@ export function TimelinePanel() {
     [state, dispatch, zoom]
   );
 
+  // Drop onto the "+ new track" zone — creates a fresh track and places the clip on it.
+  const handleNewTrackDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const mediaFileId = e.dataTransfer.getData('mediaFileId');
+      if (!mediaFileId) return;
+
+      const media = state.mediaFiles[mediaFileId];
+      if (!media) return;
+
+      const contentEl = (e.currentTarget as HTMLElement).closest('.timeline-content') as HTMLElement | null;
+      let proposedTl = 0;
+      if (contentEl) {
+        const rect = contentEl.getBoundingClientRect();
+        proposedTl = Math.max(0, (e.clientX - rect.left) / zoom);
+      }
+
+      const newTrackId = newId('track');
+      const trackName = `Video ${state.trackOrder.length + 1}`;
+      dispatch({ type: 'ADD_TRACK', payload: { name: trackName, id: newTrackId } });
+
+      const clipId = newId('clip');
+      const clip: VideoClip = {
+        id: clipId,
+        kind: 'video',
+        mediaFileId,
+        sourceStart: 0,
+        sourceEnd: media.duration,
+        timelineStart: proposedTl,
+        trackId: newTrackId,
+        volume: 1,
+        muted: false,
+        pan: 0,
+        duckSourceClipId: null,
+        duckAmount: 0.6,
+        fit: 'contain',
+        transform: { ...DEFAULT_TRANSFORM },
+        color: null,
+        transitionOut: null,
+      };
+      dispatch({ type: 'ADD_CLIP', payload: { clip, trackId: newTrackId } });
+    },
+    [state, dispatch, zoom]
+  );
+
+  const [newTrackHover, setNewTrackHover] = useState(false);
+  const [hoverTrackId, setHoverTrackId] = useState<string | null>(null);
+
   const handleClipClick = (e: React.MouseEvent, clipId: string) => {
     e.stopPropagation();
     const isMulti = e.ctrlKey || e.metaKey;
@@ -652,16 +701,24 @@ export function TimelinePanel() {
 
       <div className="timeline-body">
         <div className="track-labels">
-          <div style={{ height: 24 }} />
-          {state.trackOrder.map((trackId) => {
+          <div style={{ height: 26 }} />
+          {state.trackOrder.map((trackId, trackIdx) => {
             const track = state.tracks[trackId];
+            const trackHue = (270 + trackIdx * 73) % 360;
             return (
-              <div key={trackId} className="track-label">
+              <div
+                key={trackId}
+                className="track-label"
+                style={{ ['--track-hue' as string]: trackHue }}
+              >
                 <div className="track-label-dot" />
                 {track.name}
               </div>
             );
           })}
+          <div className="track-label" style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
+            + new
+          </div>
         </div>
 
         <div
@@ -676,15 +733,24 @@ export function TimelinePanel() {
             <div className="timeline-ruler">{rulerMarks}</div>
 
             <div className="tracks-container">
-              {state.trackOrder.map((trackId) => {
+              {state.trackOrder.map((trackId, trackIdx) => {
                 const track = state.tracks[trackId];
+                const trackHue = (270 + trackIdx * 73) % 360;
                 return (
                   <div
                     key={trackId}
-                    className="track-row"
+                    className={`track-row ${hoverTrackId === trackId ? 'drag-over' : ''}`}
                     data-track-id={trackId}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => handleTrackDrop(e, trackId)}
+                    style={{ ['--track-hue' as string]: trackHue }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setHoverTrackId(trackId);
+                    }}
+                    onDragLeave={() => setHoverTrackId(null)}
+                    onDrop={(e) => {
+                      setHoverTrackId(null);
+                      handleTrackDrop(e, trackId);
+                    }}
                   >
                     {track.clips.map((clipId) => {
                       const clip = state.clips[clipId];
@@ -759,6 +825,22 @@ export function TimelinePanel() {
                   </div>
                 );
               })}
+              <div
+                className={`new-track-drop-zone ${newTrackHover ? 'drag-over' : ''}`}
+                onDragOver={(e) => {
+                  if (e.dataTransfer.types.includes('mediaFileId') || e.dataTransfer.types.includes('Files')) {
+                    e.preventDefault();
+                    setNewTrackHover(true);
+                  }
+                }}
+                onDragLeave={() => setNewTrackHover(false)}
+                onDrop={(e) => {
+                  setNewTrackHover(false);
+                  handleNewTrackDrop(e);
+                }}
+              >
+                + New track — drop a file here
+              </div>
             </div>
 
             {/* Cross-track drag preview: render the dragging clip at its preview track if different. */}

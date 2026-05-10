@@ -313,7 +313,8 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
     }
 
     case 'ADD_TRACK': {
-      const id = newId('track');
+      const id = action.payload.id ?? newId('track');
+      if (state.tracks[id]) return state;
       return {
         ...state,
         tracks: {

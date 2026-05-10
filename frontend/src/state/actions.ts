@@ -30,7 +30,7 @@ export type Action =
         fontSize?: number;
       };
     }
-  | { type: 'ADD_TRACK'; payload: { name: string } }
+  | { type: 'ADD_TRACK'; payload: { name: string; id?: string } }
   | { type: 'REMOVE_TRACK'; payload: { trackId: string } }
   | { type: 'SET_PLAYHEAD'; payload: number }
   | { type: 'SET_PLAYING'; payload: boolean }
