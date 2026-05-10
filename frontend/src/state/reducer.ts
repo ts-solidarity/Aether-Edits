@@ -1,6 +1,21 @@
-import type { ProjectState } from '../types/project';
+import type { ProjectState, Transform } from '../types/project';
 import type { Action } from './actions';
 import { newId } from '../utils/id';
+
+function clampTransform(t: Transform): Transform {
+  const wrap = (deg: number) => {
+    let n = deg % 360;
+    if (n > 180) n -= 360;
+    else if (n < -180) n += 360;
+    return n;
+  };
+  return {
+    x: Math.max(-0.5, Math.min(1.5, t.x)),
+    y: Math.max(-0.5, Math.min(1.5, t.y)),
+    scale: Math.max(0.05, Math.min(8, t.scale)),
+    rotation: wrap(t.rotation),
+  };
+}
 
 export const initialState: ProjectState = {
   projectName: 'Untitled Project',
@@ -70,27 +85,12 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
       const { clip, trackId } = action.payload;
       const track = state.tracks[trackId];
       if (!track) return state;
-
-      // Auto-place after last clip if timelineStart is 0 and track has clips
-      let finalClip = clip;
-      if (clip.timelineStart === 0 && track.clips.length > 0) {
-        let maxEnd = 0;
-        for (const cid of track.clips) {
-          const c = state.clips[cid];
-          if (c) {
-            const end = c.timelineStart + (c.sourceEnd - c.sourceStart);
-            if (end > maxEnd) maxEnd = end;
-          }
-        }
-        finalClip = { ...clip, timelineStart: maxEnd };
-      }
-
       return {
         ...state,
-        clips: { ...state.clips, [finalClip.id]: finalClip },
+        clips: { ...state.clips, [clip.id]: clip },
         tracks: {
           ...state.tracks,
-          [trackId]: { ...track, clips: [...track.clips, finalClip.id] },
+          [trackId]: { ...track, clips: [...track.clips, clip.id] },
         },
       };
     }
@@ -100,8 +100,8 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
       const clip = state.clips[clipId];
       if (!clip) return state;
 
-      const clipDuration = clip.sourceEnd - clip.sourceStart;
-      const clipEnd = clip.timelineStart + clipDuration;
+      const dur = clip.sourceEnd - clip.sourceStart;
+      const clipEnd = clip.timelineStart + dur;
       if (splitTime <= clip.timelineStart || splitTime >= clipEnd) return state;
 
       const offsetInClip = splitTime - clip.timelineStart;
@@ -110,7 +110,8 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
       const leftId = newId('clip');
       const rightId = newId('clip');
 
-      const leftClip = { ...clip, id: leftId, sourceEnd: splitSourceTime };
+      // Left loses any transitionOut (it now abuts the new right half, not the original next clip).
+      const leftClip = { ...clip, id: leftId, sourceEnd: splitSourceTime, transitionOut: null };
       const rightClip = {
         ...clip,
         id: rightId,
@@ -155,6 +156,123 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
           },
         },
         selectedClipIds: state.selectedClipIds.filter((id) => id !== clipId),
+      };
+    }
+
+    case 'TRIM_CLIP': {
+      const { clipId, sourceStart, sourceEnd, timelineStart } = action.payload;
+      const clip = state.clips[clipId];
+      if (!clip) return state;
+      if (sourceEnd - sourceStart < 0.05) return state;
+      return {
+        ...state,
+        clips: {
+          ...state.clips,
+          [clipId]: { ...clip, sourceStart, sourceEnd, timelineStart },
+        },
+      };
+    }
+
+    case 'SET_CLIP_VOLUME': {
+      const clip = state.clips[action.payload.clipId];
+      if (!clip || clip.kind !== 'video') return state;
+      const v = Math.max(0, Math.min(1, action.payload.volume));
+      if (clip.volume === v) return state;
+      return {
+        ...state,
+        clips: { ...state.clips, [clip.id]: { ...clip, volume: v } },
+      };
+    }
+
+    case 'SET_CLIP_MUTED': {
+      const clip = state.clips[action.payload.clipId];
+      if (!clip || clip.kind !== 'video') return state;
+      if (clip.muted === action.payload.muted) return state;
+      return {
+        ...state,
+        clips: { ...state.clips, [clip.id]: { ...clip, muted: action.payload.muted } },
+      };
+    }
+
+    case 'SET_CLIP_TRANSITION': {
+      const clip = state.clips[action.payload.clipId];
+      if (!clip) return state;
+      return {
+        ...state,
+        clips: {
+          ...state.clips,
+          [clip.id]: { ...clip, transitionOut: action.payload.transition },
+        },
+      };
+    }
+
+    case 'UPDATE_TEXT_CLIP': {
+      const clip = state.clips[action.payload.clipId];
+      if (!clip || clip.kind !== 'text') return state;
+      const next = {
+        ...clip,
+        text: action.payload.text ?? clip.text,
+        color: action.payload.color ?? clip.color,
+        fontSize: action.payload.fontSize ?? clip.fontSize,
+      };
+      return {
+        ...state,
+        clips: { ...state.clips, [clip.id]: next },
+      };
+    }
+
+    case 'SET_CLIP_TRANSFORM': {
+      const clip = state.clips[action.payload.clipId];
+      if (!clip) return state;
+      const merged = clampTransform({ ...clip.transform, ...action.payload.transform });
+      return {
+        ...state,
+        clips: { ...state.clips, [clip.id]: { ...clip, transform: merged } },
+      };
+    }
+
+    case 'SET_CLIP_FIT': {
+      const clip = state.clips[action.payload.clipId];
+      if (!clip || clip.kind !== 'video') return state;
+      if (clip.fit === action.payload.fit) return state;
+      return {
+        ...state,
+        clips: { ...state.clips, [clip.id]: { ...clip, fit: action.payload.fit } },
+      };
+    }
+
+    case 'SET_CLIP_COLOR': {
+      const clip = state.clips[action.payload.clipId];
+      if (!clip || clip.kind !== 'video') return state;
+      return {
+        ...state,
+        clips: { ...state.clips, [clip.id]: { ...clip, color: action.payload.color } },
+      };
+    }
+
+    case 'SET_CLIP_PAN': {
+      const clip = state.clips[action.payload.clipId];
+      if (!clip || clip.kind !== 'video') return state;
+      const p = Math.max(-1, Math.min(1, action.payload.pan));
+      if (clip.pan === p) return state;
+      return {
+        ...state,
+        clips: { ...state.clips, [clip.id]: { ...clip, pan: p } },
+      };
+    }
+
+    case 'SET_CLIP_DUCK': {
+      const clip = state.clips[action.payload.clipId];
+      if (!clip || clip.kind !== 'video') return state;
+      const amt = Math.max(0, Math.min(1, action.payload.amount));
+      const src = action.payload.sourceClipId;
+      if (clip.duckSourceClipId === src && clip.duckAmount === amt) return state;
+      return {
+        ...state,
+        clips: {
+          ...state.clips,
+          [clip.id]: { ...clip, duckSourceClipId: src, duckAmount: amt },
+        },
       };
     }
 

@@ -1,10 +1,12 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useProject } from '../../state/ProjectContext';
-import type { Clip, ProjectState } from '../../types/project';
+import type { Clip, ProjectState, TextClip, Transform, VideoClip } from '../../types/project';
+import { CanvasOverlay, type PendingTransform } from './CanvasOverlay';
 
 const CANVAS_W = 854;
 const CANVAS_H = 480;
 const ACTIVE_WINDOW_SECONDS = 3;
+const ADJACENCY_EPS = 0.01;
 
 function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -37,47 +39,163 @@ function findActiveClipsAtTime(state: ProjectState, time: number): Clip[] {
   return out;
 }
 
-/** Letterbox draw matching FFmpeg: scale force_original_aspect_ratio=decrease + pad center + black. */
-function drawFitted(
+/** The immediately previous clip on the same track (by timelineStart order), if any. */
+function prevClipOnTrack(state: ProjectState, clip: Clip): Clip | null {
+  const track = state.tracks[clip.trackId];
+  if (!track) return null;
+  const sorted = track.clips
+    .map((cid) => state.clips[cid])
+    .filter((c): c is Clip => Boolean(c))
+    .sort((a, b) => a.timelineStart - b.timelineStart);
+  const idx = sorted.findIndex((c) => c.id === clip.id);
+  return idx > 0 ? sorted[idx - 1] : null;
+}
+
+/** Alpha multiplier for a clip at time t, based on fade-in (from prev transitionOut) and
+ *  fade-out (from own transitionOut). Matches FFmpeg: fades live in the last/first D/2 of clip. */
+function computeClipAlpha(state: ProjectState, clip: Clip, t: number): number {
+  let alpha = 1;
+  const dur = clip.sourceEnd - clip.sourceStart;
+  const tlEnd = clip.timelineStart + dur;
+
+  if (clip.transitionOut && clip.transitionOut.duration > 0) {
+    const D = Math.min(clip.transitionOut.duration, dur);
+    const halfD = D / 2;
+    const fadeStart = tlEnd - halfD;
+    if (t >= fadeStart && t < tlEnd) {
+      alpha *= Math.max(0, (tlEnd - t) / halfD);
+    }
+  }
+
+  const prev = prevClipOnTrack(state, clip);
+  if (prev && prev.transitionOut && prev.transitionOut.duration > 0) {
+    const prevEnd = prev.timelineStart + (prev.sourceEnd - prev.sourceStart);
+    if (Math.abs(prevEnd - clip.timelineStart) < ADJACENCY_EPS) {
+      const D = Math.min(prev.transitionOut.duration, dur);
+      const halfD = D / 2;
+      const fadeInEnd = clip.timelineStart + halfD;
+      if (t >= clip.timelineStart && t < fadeInEnd) {
+        alpha *= Math.max(0, (t - clip.timelineStart) / halfD);
+      }
+    }
+  }
+
+  return Math.max(0, Math.min(1, alpha));
+}
+
+/** CSS filter string approximating FFmpeg `eq` + `hue` for live preview.
+ *  Note: CSS brightness is multiplicative (1+b), FFmpeg eq=brightness=b is additive.
+ *  We use 1+b as the closest visual approximation; expect minor tone differences vs. export. */
+function colorAdjustToCssFilter(c: VideoClip['color']): string {
+  if (!c) return 'none';
+  return `brightness(${(1 + c.brightness).toFixed(3)}) contrast(${c.contrast.toFixed(3)}) saturate(${c.saturation.toFixed(3)}) hue-rotate(${c.hue.toFixed(1)}deg)`;
+}
+
+/** Draw a video clip into the canvas with letterbox / cover / free transform.
+ *  - 'contain': preserve aspect, center, letterbox excess (current default).
+ *  - 'cover': preserve aspect, center, crop excess.
+ *  - 'free': apply transform.x/y/scale/rotation around clip center; base size = letterbox-fit.
+ *  Color adjust (if any) is applied via ctx.filter for the duration of the draw.
+ */
+function drawVideoClip(
   ctx: CanvasRenderingContext2D,
   video: HTMLVideoElement,
+  clip: VideoClip,
   w: number,
-  h: number
+  h: number,
+  transformOverride?: Transform
 ): void {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) return;
-  const scale = Math.min(w / vw, h / vh);
-  const dw = Math.round(vw * scale);
-  const dh = Math.round(vh * scale);
-  const dx = Math.floor((w - dw) / 2);
-  const dy = Math.floor((h - dh) / 2);
-  ctx.drawImage(video, dx, dy, dw, dh);
+
+  const filter = colorAdjustToCssFilter(clip.color);
+  const restoreFilter = filter !== 'none';
+  if (restoreFilter) ctx.filter = filter;
+
+  if (clip.fit === 'cover') {
+    const k = Math.max(w / vw, h / vh);
+    const dw = vw * k;
+    const dh = vh * k;
+    ctx.drawImage(video, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  } else if (clip.fit === 'free') {
+    const t = transformOverride ?? clip.transform;
+    const baseK = Math.min(w / vw, h / vh);
+    const k = baseK * t.scale;
+    const dw = vw * k;
+    const dh = vh * k;
+    ctx.save();
+    ctx.translate(t.x * w, t.y * h);
+    if (t.rotation !== 0) ctx.rotate((t.rotation * Math.PI) / 180);
+    ctx.drawImage(video, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
+  } else {
+    // 'contain' — letterbox.
+    const scale = Math.min(w / vw, h / vh);
+    const dw = Math.round(vw * scale);
+    const dh = Math.round(vh * scale);
+    const dx = Math.floor((w - dw) / 2);
+    const dy = Math.floor((h - dh) / 2);
+    ctx.drawImage(video, dx, dy, dw, dh);
+  }
+
+  if (restoreFilter) ctx.filter = 'none';
+}
+
+function drawTextClip(
+  ctx: CanvasRenderingContext2D,
+  clip: TextClip,
+  w: number,
+  h: number,
+  transformOverride?: Transform
+): void {
+  const t = transformOverride ?? clip.transform;
+  const fontSizePx = Math.round((clip.fontSize / 100) * h * t.scale);
+  if (fontSizePx < 1) return;
+
+  ctx.save();
+  ctx.translate(t.x * w, t.y * h);
+  if (t.rotation !== 0) ctx.rotate((t.rotation * Math.PI) / 180);
+  ctx.font = `700 ${fontSizePx}px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = Math.max(2, Math.round(fontSizePx / 24));
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+  ctx.strokeText(clip.text, 0, 0);
+  ctx.fillStyle = clip.color;
+  ctx.fillText(clip.text, 0, 0);
+  ctx.restore();
 }
 
 export function PreviewPanel() {
   const { state, dispatch } = useProject();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  // Per-clip video elements. Two clips sharing a media file need independent currentTime.
-  // A proper LRU pool of 8–12 elements is the right answer for 50+ clip projects — deferred.
   const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
-  // Tracks clipIds whose video has had at least one successful `seeked` event.
-  // Detached videos return empty frames from drawImage until a seek actually decodes.
   const primedClipsRef = useRef<Set<string>>(new Set());
+  const playingClipsRef = useRef<Set<string>>(new Set());
   const rafRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
-  // Triggers re-render when a <video> fires loadeddata so the still-frame effect redraws.
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const [videoLoadTick, setVideoLoadTick] = useState(0);
+
+  // Live transform during drag — bypasses dispatch so a pointermove storm
+  // doesn't fill the 50-slot history. Committed once on pointerup.
+  const [pendingTransform, setPendingTransform] = useState<PendingTransform | null>(null);
+  const pendingTransformRef = useRef<PendingTransform | null>(null);
+  pendingTransformRef.current = pendingTransform;
 
   const hasClips = Object.keys(state.clips).length > 0;
   const totalDuration = getTimelineDuration(state.clips);
 
-  // Ensure a <video> element per clip; prune ones whose clip was deleted.
   useEffect(() => {
     const current = videoRefs.current;
-    const alive = new Set(Object.keys(state.clips));
+    const aliveVideoIds = new Set<string>();
+    for (const [cid, c] of Object.entries(state.clips)) {
+      if (c.kind === 'video') aliveVideoIds.add(cid);
+    }
     for (const clipId of Array.from(current.keys())) {
-      if (!alive.has(clipId)) {
+      if (!aliveVideoIds.has(clipId)) {
         const v = current.get(clipId);
         if (v) {
           v.pause();
@@ -88,7 +206,7 @@ export function PreviewPanel() {
         primedClipsRef.current.delete(clipId);
       }
     }
-    for (const clipId of alive) {
+    for (const clipId of aliveVideoIds) {
       if (!current.has(clipId)) {
         const v = document.createElement('video');
         v.preload = 'metadata';
@@ -100,11 +218,10 @@ export function PreviewPanel() {
     }
   }, [state.clips]);
 
-  // Lazy src-attach: only clips within playhead ±3s get a src (keeps active decoders small).
   useEffect(() => {
     for (const [clipId, v] of videoRefs.current) {
       const clip = state.clips[clipId];
-      if (!clip) continue;
+      if (!clip || clip.kind !== 'video') continue;
       const media = state.mediaFiles[clip.mediaFileId];
       if (!media?.objectUrl) {
         if (v.src) {
@@ -140,7 +257,7 @@ export function PreviewPanel() {
     }
   }, []);
 
-  // Still-frame (paused): seek each active clip to its source time, then composite bottom→top.
+  // Still-frame (paused): seek each active VIDEO clip, then composite bottom→top with alpha + text.
   useEffect(() => {
     if (!hasClips || state.isPlaying) return;
     const canvas = canvasRef.current;
@@ -157,8 +274,8 @@ export function PreviewPanel() {
     const pending: Array<{ v: HTMLVideoElement; handler: () => void; type: 'seeked' | 'loadedmetadata' }> = [];
 
     const render = async () => {
-      // Kick each clip toward its source time; wait for readiness where needed.
       for (const clip of active) {
+        if (clip.kind !== 'video') continue;
         const v = videoRefs.current.get(clip.id);
         if (!v || !v.src) continue;
         const src = clip.sourceStart + (state.playheadPosition - clip.timelineStart);
@@ -177,8 +294,6 @@ export function PreviewPanel() {
             const handler = () => resolve();
             v.addEventListener('seeked', handler, { once: true });
             pending.push({ v, handler, type: 'seeked' });
-            // If we're already at `src` and haven't primed yet, force a tiny nudge
-            // to coerce the decoder into producing its first frame.
             if (!primed && Math.abs(v.currentTime - src) < 0.001) {
               v.currentTime = Math.max(0, src + 0.001);
             } else {
@@ -192,11 +307,21 @@ export function PreviewPanel() {
 
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const pt = pendingTransformRef.current;
       for (const clip of active) {
-        const v = videoRefs.current.get(clip.id);
-        if (!v || v.readyState < 2) continue;
-        drawFitted(ctx, v, canvas.width, canvas.height);
+        const alpha = computeClipAlpha(state, clip, state.playheadPosition);
+        if (alpha <= 0.001) continue;
+        ctx.globalAlpha = alpha;
+        const override = pt && pt.clipId === clip.id ? pt.transform : undefined;
+        if (clip.kind === 'video') {
+          const v = videoRefs.current.get(clip.id);
+          if (v && v.readyState >= 2) drawVideoClip(ctx, v, clip, canvas.width, canvas.height, override);
+        } else {
+          drawTextClip(ctx, clip as TextClip, canvas.width, canvas.height, override);
+        }
       }
+      ctx.globalAlpha = 1;
     };
 
     render();
@@ -208,9 +333,9 @@ export function PreviewPanel() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasClips, state.isPlaying, state.playheadPosition, state.clips, state.mediaFiles, videoLoadTick]);
+  }, [hasClips, state.isPlaying, state.playheadPosition, state.clips, state.mediaFiles, videoLoadTick, pendingTransform]);
 
-  // Playback loop: per-frame composite of all active clips.
+  // Playback loop: let each active clip's <video> play; canvas paints per frame.
   useEffect(() => {
     if (!hasClips || !state.isPlaying) return;
     const canvas = canvasRef.current;
@@ -222,7 +347,8 @@ export function PreviewPanel() {
     const render = (timestamp: number) => {
       const delta = lastTimeRef.current ? (timestamp - lastTimeRef.current) / 1000 : 0;
       lastTimeRef.current = timestamp;
-      const t = state.playheadPosition + delta;
+      const snapshot = stateRef.current;
+      const t = snapshot.playheadPosition + delta;
       if (t >= totalDuration) {
         dispatch({ type: 'SET_PLAYING', payload: false });
         dispatch({ type: 'SET_PLAYHEAD', payload: totalDuration });
@@ -230,16 +356,61 @@ export function PreviewPanel() {
       }
       dispatch({ type: 'SET_PLAYHEAD', payload: t });
 
+      const active = findActiveClipsAtTime(snapshot, t);
+      const activeIds = new Set(active.map((c) => c.id));
+
+      for (const clipId of Array.from(playingClipsRef.current)) {
+        if (!activeIds.has(clipId)) {
+          const v = videoRefs.current.get(clipId);
+          if (v) {
+            if (!v.paused) v.pause();
+            v.muted = true;
+          }
+          playingClipsRef.current.delete(clipId);
+        }
+      }
+
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      for (const clip of findActiveClipsAtTime(state, t)) {
-        const v = videoRefs.current.get(clip.id);
-        if (!v || v.readyState < 2) continue;
-        const src = clip.sourceStart + (t - clip.timelineStart);
-        if (Math.abs(v.currentTime - src) > 0.1) v.currentTime = src;
-        drawFitted(ctx, v, canvas.width, canvas.height);
+      const pt = pendingTransformRef.current;
+      for (const clip of active) {
+        const alpha = computeClipAlpha(snapshot, clip, t);
+        if (alpha <= 0.001) continue;
+
+        if (clip.kind === 'video') {
+          const v = videoRefs.current.get(clip.id);
+          if (!v || !v.src) continue;
+          const videoClip = clip as VideoClip;
+          const expectedSrc = videoClip.sourceStart + (t - videoClip.timelineStart);
+
+          if (!playingClipsRef.current.has(clip.id)) {
+            if (v.readyState >= 1) v.currentTime = expectedSrc;
+            v.muted = videoClip.muted;
+            v.volume = videoClip.volume * alpha;
+            v.play().catch(() => {
+              v.muted = true;
+              v.play().catch(() => {});
+            });
+            playingClipsRef.current.add(clip.id);
+          } else {
+            if (Math.abs(v.currentTime - expectedSrc) > 0.3) v.currentTime = expectedSrc;
+            v.muted = videoClip.muted;
+            v.volume = Math.max(0, Math.min(1, videoClip.volume * alpha));
+          }
+
+          if (v.readyState >= 2) {
+            ctx.globalAlpha = alpha;
+            const override = pt && pt.clipId === clip.id ? pt.transform : undefined;
+            drawVideoClip(ctx, v, videoClip, canvas.width, canvas.height, override);
+          }
+        } else {
+          ctx.globalAlpha = alpha;
+          const override = pt && pt.clipId === clip.id ? pt.transform : undefined;
+          drawTextClip(ctx, clip as TextClip, canvas.width, canvas.height, override);
+        }
       }
+      ctx.globalAlpha = 1;
 
       rafRef.current = requestAnimationFrame(render);
     };
@@ -248,6 +419,14 @@ export function PreviewPanel() {
     return () => {
       cancelAnimationFrame(rafRef.current);
       lastTimeRef.current = 0;
+      for (const clipId of playingClipsRef.current) {
+        const v = videoRefs.current.get(clipId);
+        if (v) {
+          if (!v.paused) v.pause();
+          v.muted = true;
+        }
+      }
+      playingClipsRef.current.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasClips, state.isPlaying, totalDuration]);
@@ -260,29 +439,82 @@ export function PreviewPanel() {
     dispatch({ type: 'SET_PLAYING', payload: !state.isPlaying });
   };
 
+  const skipToStart = () => {
+    if (state.isPlaying) dispatch({ type: 'SET_PLAYING', payload: false });
+    dispatch({ type: 'SET_PLAYHEAD', payload: 0 });
+  };
+
+  const skipToEnd = () => {
+    if (state.isPlaying) dispatch({ type: 'SET_PLAYING', payload: false });
+    dispatch({ type: 'SET_PLAYHEAD', payload: totalDuration });
+  };
+
+  const activeClips = hasClips ? findActiveClipsAtTime(state, state.playheadPosition) : [];
+
   return (
     <div className="preview-panel">
       <div className="preview-canvas-container">
         {hasClips ? (
-          <canvas
-            ref={canvasRef}
-            className="preview-canvas"
-            width={CANVAS_W}
-            height={CANVAS_H}
-          />
+          <div className="preview-canvas-wrapper">
+            <canvas
+              ref={canvasRef}
+              className="preview-canvas"
+              width={CANVAS_W}
+              height={CANVAS_H}
+            />
+            <CanvasOverlay
+              canvasRef={canvasRef}
+              canvasW={CANVAS_W}
+              canvasH={CANVAS_H}
+              activeClips={activeClips}
+              selectedClipIds={state.selectedClipIds}
+              isPlaying={state.isPlaying}
+              dispatch={dispatch}
+              mediaFiles={state.mediaFiles}
+              pendingTransform={pendingTransform}
+              setPendingTransform={setPendingTransform}
+            />
+          </div>
         ) : (
           <div className="preview-placeholder">
             <div className="preview-placeholder-icon">▶</div>
             <div className="preview-placeholder-text">
-              Drop a video to begin editing
+              Drop a video in the sidebar to begin
             </div>
           </div>
         )}
       </div>
       <div className="playback-controls">
-        <button className="play-btn" onClick={togglePlay} disabled={!hasClips}>
-          {state.isPlaying ? '⏸' : '▶'}
-        </button>
+        <span />
+        <div className="playback-controls-group">
+          <button
+            className="control-btn"
+            onClick={skipToStart}
+            disabled={!hasClips}
+            title="Skip to start"
+            aria-label="Skip to start"
+          >
+            ⏮
+          </button>
+          <button
+            className="play-btn"
+            onClick={togglePlay}
+            disabled={!hasClips}
+            title={state.isPlaying ? 'Pause (Space)' : 'Play (Space)'}
+            aria-label={state.isPlaying ? 'Pause' : 'Play'}
+          >
+            {state.isPlaying ? '⏸' : '▶'}
+          </button>
+          <button
+            className="control-btn"
+            onClick={skipToEnd}
+            disabled={!hasClips}
+            title="Skip to end"
+            aria-label="Skip to end"
+          >
+            ⏭
+          </button>
+        </div>
         <span className="time-display">
           {formatTime(state.playheadPosition)} / {formatTime(totalDuration)}
         </span>

@@ -1,0 +1,318 @@
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import type { Clip, MediaFile, TextClip, Transform, VideoClip } from '../../types/project';
+import type { Action } from '../../state/actions';
+
+export interface PendingTransform {
+  clipId: string;
+  transform: Transform;
+}
+
+interface Props {
+  canvasRef: React.RefObject<HTMLCanvasElement | null>;
+  canvasW: number;
+  canvasH: number;
+  activeClips: Clip[];
+  selectedClipIds: string[];
+  isPlaying: boolean;
+  dispatch: Dispatch<Action>;
+  mediaFiles: Record<string, MediaFile>;
+  pendingTransform: PendingTransform | null;
+  setPendingTransform: Dispatch<SetStateAction<PendingTransform | null>>;
+}
+
+type DragMode = 'move' | 'scale-corner' | 'rotate';
+
+interface DragState {
+  clipId: string;
+  mode: DragMode;
+  origTransform: Transform;
+  startClientX: number;
+  startClientY: number;
+  startDistPx: number;   // distance from clip center to pointer at drag start
+  startAngleRad: number; // angle from clip center to pointer at drag start
+}
+
+const SNAP_TARGETS = [0.05, 0.25, 0.5, 0.75, 0.95];
+const SNAP_THRESHOLD = 0.04;
+
+function snapTo(v: number): number {
+  for (const t of SNAP_TARGETS) if (Math.abs(v - t) < SNAP_THRESHOLD) return t;
+  return v;
+}
+
+export function CanvasOverlay({
+  canvasRef,
+  canvasW,
+  canvasH,
+  activeClips,
+  selectedClipIds,
+  isPlaying,
+  dispatch,
+  mediaFiles,
+  pendingTransform,
+  setPendingTransform,
+}: Props) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const [displaySize, setDisplaySize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  dragRef.current = drag;
+  const displaySizeRef = useRef(displaySize);
+  displaySizeRef.current = displaySize;
+  const pendingRef = useRef<PendingTransform | null>(pendingTransform);
+  pendingRef.current = pendingTransform;
+
+  // Track canvas display size.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const update = () => {
+      const r = canvas.getBoundingClientRect();
+      setDisplaySize({ w: r.width, h: r.height });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(canvas);
+    return () => ro.disconnect();
+  }, [canvasRef]);
+
+  // Global drag listeners (one effect lifecycle per drag instance).
+  useEffect(() => {
+    if (!drag) return;
+
+    const canvas = canvasRef.current;
+    const onMove = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const display = displaySizeRef.current;
+      if (display.w <= 0 || display.h <= 0 || !canvas) return;
+      const rect = canvas.getBoundingClientRect();
+
+      if (d.mode === 'move') {
+        const dx = e.clientX - d.startClientX;
+        const dy = e.clientY - d.startClientY;
+        let nx = d.origTransform.x + dx / display.w;
+        let ny = d.origTransform.y + dy / display.h;
+        if (e.shiftKey) {
+          nx = snapTo(nx);
+          ny = snapTo(ny);
+        }
+        setPendingTransform({
+          clipId: d.clipId,
+          transform: { ...d.origTransform, x: nx, y: ny },
+        });
+      } else if (d.mode === 'scale-corner') {
+        const cxView = rect.left + d.origTransform.x * display.w;
+        const cyView = rect.top + d.origTransform.y * display.h;
+        const cur = Math.hypot(e.clientX - cxView, e.clientY - cyView);
+        const ratio = d.startDistPx > 0 ? cur / d.startDistPx : 1;
+        const newScale = Math.max(0.05, Math.min(8, d.origTransform.scale * ratio));
+        setPendingTransform({
+          clipId: d.clipId,
+          transform: { ...d.origTransform, scale: newScale },
+        });
+      } else {
+        const cxView = rect.left + d.origTransform.x * display.w;
+        const cyView = rect.top + d.origTransform.y * display.h;
+        const angle = Math.atan2(e.clientY - cyView, e.clientX - cxView);
+        const deltaDeg = ((angle - d.startAngleRad) * 180) / Math.PI;
+        let newRot = d.origTransform.rotation + deltaDeg;
+        while (newRot > 180) newRot -= 360;
+        while (newRot < -180) newRot += 360;
+        if (e.shiftKey) newRot = Math.round(newRot / 15) * 15;
+        setPendingTransform({
+          clipId: d.clipId,
+          transform: { ...d.origTransform, rotation: newRot },
+        });
+      }
+    };
+
+    const onUp = () => {
+      const d = dragRef.current;
+      const pt = pendingRef.current;
+      if (d && pt && pt.clipId === d.clipId) {
+        dispatch({
+          type: 'SET_CLIP_TRANSFORM',
+          payload: { clipId: d.clipId, transform: pt.transform },
+        });
+      }
+      setDrag(null);
+      setPendingTransform(null);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag?.clipId, drag?.mode]);
+
+  const beginDrag = (e: React.PointerEvent, clip: Clip, mode: DragMode, t: Transform): void => {
+    e.stopPropagation();
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    const display = displaySizeRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const cxView = rect.left + t.x * display.w;
+    const cyView = rect.top + t.y * display.h;
+    setDrag({
+      clipId: clip.id,
+      mode,
+      origTransform: { ...t },
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startDistPx: Math.hypot(e.clientX - cxView, e.clientY - cyView),
+      startAngleRad: Math.atan2(e.clientY - cyView, e.clientX - cxView),
+    });
+    if (!selectedClipIds.includes(clip.id)) {
+      dispatch({ type: 'SELECT_CLIP', payload: [clip.id] });
+    }
+  };
+
+  return (
+    <div
+      ref={overlayRef}
+      className="canvas-overlay"
+      style={{
+        width: displaySize.w || '100%',
+        height: displaySize.h || '100%',
+        pointerEvents: isPlaying ? 'none' : undefined,
+      }}
+    >
+      {displaySize.w > 0 &&
+        activeClips.map((clip) => {
+          // Text clips are always interactive; video clips only when fit === 'free'.
+          if (clip.kind === 'video' && clip.fit !== 'free') return null;
+          const t =
+            pendingTransform && pendingTransform.clipId === clip.id
+              ? pendingTransform.transform
+              : clip.transform;
+          const isSelected = selectedClipIds.includes(clip.id);
+          const box =
+            clip.kind === 'text'
+              ? measureTextBox(clip, t, canvasH, displaySize.h)
+              : measureVideoBox(clip, t, mediaFiles, canvasW, canvasH, displaySize.w, displaySize.h);
+          return (
+            <ClipHandle
+              key={clip.id}
+              transform={t}
+              displayW={displaySize.w}
+              displayH={displaySize.h}
+              boxW={box.w}
+              boxH={box.h}
+              isSelected={isSelected}
+              onPointerDown={(e, mode) => beginDrag(e, clip, mode, t)}
+            />
+          );
+        })}
+    </div>
+  );
+}
+
+interface HandleProps {
+  transform: Transform;
+  displayW: number;
+  displayH: number;
+  boxW: number;
+  boxH: number;
+  isSelected: boolean;
+  onPointerDown: (e: React.PointerEvent, mode: DragMode) => void;
+}
+
+/** Approximate text bounding box in display px. Mirrors PreviewPanel.drawTextClip. */
+function measureTextBox(clip: TextClip, transform: Transform, canvasH: number, displayH: number): { w: number; h: number } {
+  const fontSizeCanvasPx = (clip.fontSize / 100) * canvasH * transform.scale;
+  const ratio = canvasH > 0 ? displayH / canvasH : 1;
+  const fontPxDisplay = Math.max(8, fontSizeCanvasPx * ratio);
+  // Cheap width estimate: avg glyph ≈ 0.55 × font size.
+  const text = clip.text || ' ';
+  const charW = fontPxDisplay * 0.55;
+  return {
+    w: Math.max(charW * text.length, fontPxDisplay * 1.5),
+    h: fontPxDisplay * 1.2,
+  };
+}
+
+/** Video bounding box in display px when fit='free'. Mirrors PreviewPanel.drawVideoClip. */
+function measureVideoBox(
+  clip: VideoClip,
+  transform: Transform,
+  mediaFiles: Record<string, MediaFile>,
+  canvasW: number,
+  canvasH: number,
+  displayW: number,
+  displayH: number
+): { w: number; h: number } {
+  const m = mediaFiles[clip.mediaFileId];
+  if (!m || m.width <= 0 || m.height <= 0) {
+    // Fallback: half the canvas, square.
+    return { w: displayW * 0.5, h: displayH * 0.5 };
+  }
+  const baseK = Math.min(canvasW / m.width, canvasH / m.height);
+  const k = baseK * transform.scale;
+  const dwCanvas = m.width * k;
+  const dhCanvas = m.height * k;
+  const ratioX = canvasW > 0 ? displayW / canvasW : 1;
+  const ratioY = canvasH > 0 ? displayH / canvasH : 1;
+  return { w: dwCanvas * ratioX, h: dhCanvas * ratioY };
+}
+
+function ClipHandle({
+  transform,
+  displayW,
+  displayH,
+  boxW,
+  boxH,
+  isSelected,
+  onPointerDown,
+}: HandleProps) {
+  const cx = transform.x * displayW;
+  const cy = transform.y * displayH;
+  const padding = 6;
+  const w = boxW + padding * 2;
+  const h = boxH + padding * 2;
+
+  return (
+    <div
+      className={`overlay-clip-handle ${isSelected ? 'selected' : ''}`}
+      style={{
+        left: cx - w / 2,
+        top: cy - h / 2,
+        width: w,
+        height: h,
+        transform: `rotate(${transform.rotation}deg)`,
+      }}
+      onPointerDown={(e) => onPointerDown(e, 'move')}
+    >
+      {isSelected && (
+        <>
+          <div
+            className="overlay-handle-corner tl"
+            onPointerDown={(e) => onPointerDown(e, 'scale-corner')}
+          />
+          <div
+            className="overlay-handle-corner tr"
+            onPointerDown={(e) => onPointerDown(e, 'scale-corner')}
+          />
+          <div
+            className="overlay-handle-corner bl"
+            onPointerDown={(e) => onPointerDown(e, 'scale-corner')}
+          />
+          <div
+            className="overlay-handle-corner br"
+            onPointerDown={(e) => onPointerDown(e, 'scale-corner')}
+          />
+          <div
+            className="overlay-handle-rotate"
+            onPointerDown={(e) => onPointerDown(e, 'rotate')}
+          />
+        </>
+      )}
+    </div>
+  );
+}

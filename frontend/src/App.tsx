@@ -51,11 +51,11 @@ function App() {
     <ProjectProvider>
       <EditorShortcuts />
       <TopBar onExport={() => setExportOpen(true)} />
-      <div className="editor-layout">
+      <main className="editor-layout">
         <Sidebar />
         <PreviewPanel />
-      </div>
-      <TimelinePanel />
+        <TimelinePanel />
+      </main>
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
     </ProjectProvider>
   );

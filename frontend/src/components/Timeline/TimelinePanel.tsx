@@ -1,13 +1,143 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useProject } from '../../state/ProjectContext';
-import type { Clip, MediaFile } from '../../types/project';
+import type { Clip, MediaFile, ProjectState, VideoClip } from '../../types/project';
+import { DEFAULT_TRANSFORM } from '../../types/project';
 import { newId } from '../../utils/id';
 import { getThumbnail } from '../../services/thumbnails';
+
+const ADJACENCY_EPS = 0.01;
+
+const TRACK_ROW_HEIGHT = 48;
+const MIN_CLIP_DURATION = 0.05;
+const SNAP_PX = 8;
+const DRAG_THRESHOLD_PX = 3;
+
+type DragMode = 'move' | 'trim-left' | 'trim-right';
+
+interface DragState {
+  mode: DragMode;
+  clipId: string;
+  startClientX: number;
+  startClientY: number;
+  origTimelineStart: number;
+  origSourceStart: number;
+  origSourceEnd: number;
+  origTrackId: string;
+  mediaDuration: number;
+  preview: {
+    timelineStart: number;
+    sourceStart: number;
+    sourceEnd: number;
+    trackId: string;
+  };
+  hasMoved: boolean;
+  snapTime: number | null; // time in seconds where snap indicator should render
+}
+
+function collectSnapPoints(state: ProjectState, excludeClipId: string): number[] {
+  const pts = new Set<number>();
+  pts.add(0);
+  pts.add(state.playheadPosition);
+  for (const clip of Object.values(state.clips)) {
+    if (clip.id === excludeClipId) continue;
+    pts.add(clip.timelineStart);
+    pts.add(clip.timelineStart + (clip.sourceEnd - clip.sourceStart));
+  }
+  return Array.from(pts);
+}
+
+function snap(candidate: number, points: number[], threshold: number): number | null {
+  let best: number | null = null;
+  let bestDist = Infinity;
+  for (const p of points) {
+    const d = Math.abs(candidate - p);
+    if (d < threshold && d < bestDist) {
+      best = p;
+      bestDist = d;
+    }
+  }
+  return best;
+}
+
+/** Clips on `trackId` other than `excludeClipId`, sorted by timelineStart. */
+function otherClipsOnTrack(
+  state: ProjectState,
+  trackId: string,
+  excludeClipId: string
+): Clip[] {
+  const track = state.tracks[trackId];
+  if (!track) return [];
+  const out: Clip[] = [];
+  for (const cid of track.clips) {
+    const c = state.clips[cid];
+    if (c && c.id !== excludeClipId) out.push(c);
+  }
+  out.sort((a, b) => a.timelineStart - b.timelineStart);
+  return out;
+}
+
+/** Clamp a proposed left-edge position so [tl, tl+clipDur] doesn't overlap existing clips.
+ *  Picks the closest free gap that can fit the clip. */
+function clampToFreeSpace(
+  proposedTl: number,
+  clipDur: number,
+  others: Clip[]
+): number {
+  // Build gaps
+  const gaps: Array<[number, number]> = [];
+  let cursor = 0;
+  for (const o of others) {
+    const oStart = o.timelineStart;
+    const oEnd = oStart + (o.sourceEnd - o.sourceStart);
+    if (oStart > cursor) gaps.push([cursor, oStart]);
+    cursor = Math.max(cursor, oEnd);
+  }
+  gaps.push([cursor, Infinity]);
+
+  const fittable = gaps.filter(([s, e]) => e === Infinity || e - s + 1e-6 >= clipDur);
+  if (fittable.length === 0) return Math.max(0, proposedTl);
+
+  let bestTl = Math.max(0, proposedTl);
+  let bestDist = Infinity;
+  for (const [s, e] of fittable) {
+    const maxStart = e === Infinity ? Infinity : e - clipDur;
+    const clamped = Math.max(s, Math.min(maxStart, proposedTl));
+    const dist = Math.abs(clamped - proposedTl);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestTl = clamped;
+    }
+  }
+  return bestTl;
+}
+
+/** Maximum right edge time before the next clip on the same track. */
+function maxRightEdge(others: Clip[], originTl: number): number {
+  let min = Infinity;
+  for (const o of others) {
+    if (o.timelineStart >= originTl) {
+      min = Math.min(min, o.timelineStart);
+    }
+  }
+  return min;
+}
+
+/** Minimum left edge time after the previous clip on the same track. */
+function minLeftEdge(others: Clip[], originTl: number): number {
+  let max = 0;
+  for (const o of others) {
+    const oEnd = o.timelineStart + (o.sourceEnd - o.sourceStart);
+    if (oEnd <= originTl + 1e-6) {
+      max = Math.max(max, oEnd);
+    }
+  }
+  return max;
+}
 
 const THUMB_W = 80;
 const THUMB_H = 45;
 
-function ClipFilmStrip({ clip, media, widthPx }: { clip: Clip; media: MediaFile | undefined; widthPx: number }) {
+function ClipFilmStrip({ clip, media, widthPx }: { clip: VideoClip; media: MediaFile | undefined; widthPx: number }) {
   const [urls, setUrls] = useState<string[]>([]);
 
   useEffect(() => {
@@ -93,10 +223,209 @@ export function TimelinePanel() {
     y: number;
     clipId: string;
   } | null>(null);
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  dragRef.current = drag;
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   const zoom = state.zoomLevel;
   const duration = getTimelineDuration(state.clips);
   const timelineWidth = duration * zoom;
+
+  // Global mouse listeners while dragging.
+  useEffect(() => {
+    if (!drag) return;
+
+    const onMove = (e: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const curState = stateRef.current;
+      const z = curState.zoomLevel;
+      const threshold = SNAP_PX / z;
+      const snapPoints = collectSnapPoints(curState, d.clipId);
+
+      const dx = e.clientX - d.startClientX;
+      const dy = e.clientY - d.startClientY;
+      const dtime = dx / z;
+      const hasMoved = d.hasMoved || Math.abs(dx) > DRAG_THRESHOLD_PX || Math.abs(dy) > DRAG_THRESHOLD_PX;
+
+      let preview = { ...d.preview };
+      let snapTime: number | null = null;
+
+      if (d.mode === 'move') {
+        const clipDur = d.origSourceEnd - d.origSourceStart;
+
+        // Track detection: elementsFromPoint (plural) gives the full stack under
+        // the cursor. The dragging clip itself is in that stack and its `closest`
+        // walks up to the ORIGIN track row — so we must skip it. Prefer the
+        // first track-row hit that isn't an ancestor of the dragging clip.
+        const stack = document.elementsFromPoint(e.clientX, e.clientY);
+        let hoveredTrackId: string | null = null;
+        for (const el of stack) {
+          const h = el as HTMLElement;
+          // direct hit on a track-row element (ignore nested .clip children)
+          if (h.hasAttribute('data-track-id')) {
+            hoveredTrackId = h.getAttribute('data-track-id');
+            break;
+          }
+        }
+        const targetTrackId = hoveredTrackId || d.preview.trackId || d.origTrackId;
+
+        let newTl = Math.max(0, d.origTimelineStart + dtime);
+
+        // Snap both edges; pick whichever is closer.
+        const leftSnap = snap(newTl, snapPoints, threshold);
+        const rightSnap = snap(newTl + clipDur, snapPoints, threshold);
+        if (leftSnap !== null && (rightSnap === null || Math.abs(newTl - leftSnap) <= Math.abs(newTl + clipDur - rightSnap))) {
+          newTl = leftSnap;
+          snapTime = leftSnap;
+        } else if (rightSnap !== null) {
+          newTl = rightSnap - clipDur;
+          if (newTl < 0) newTl = 0;
+          snapTime = rightSnap;
+        }
+
+        // Clamp into the nearest free gap on the target track so clips never overlap.
+        const others = otherClipsOnTrack(curState, targetTrackId, d.clipId);
+        newTl = clampToFreeSpace(newTl, clipDur, others);
+
+        preview.timelineStart = newTl;
+        preview.trackId = targetTrackId;
+      } else if (d.mode === 'trim-left') {
+        const others = otherClipsOnTrack(curState, d.origTrackId, d.clipId);
+        const minTl = minLeftEdge(others, d.origTimelineStart);
+
+        let newSrcStart = d.origSourceStart + dtime;
+        newSrcStart = Math.max(0, Math.min(d.origSourceEnd - MIN_CLIP_DURATION, newSrcStart));
+        const srcDelta = newSrcStart - d.origSourceStart;
+        let newTl = Math.max(0, d.origTimelineStart + srcDelta);
+
+        // Snap newTl to snap points.
+        const leftSnap = snap(newTl, snapPoints, threshold);
+        if (leftSnap !== null) {
+          const tlShift = leftSnap - newTl;
+          newTl = leftSnap;
+          newSrcStart += tlShift;
+          snapTime = leftSnap;
+        }
+
+        // Don't let the left edge cross the previous clip on this track.
+        if (newTl < minTl) {
+          const shift = minTl - newTl;
+          newTl = minTl;
+          newSrcStart += shift;
+        }
+        newSrcStart = Math.max(0, Math.min(d.origSourceEnd - MIN_CLIP_DURATION, newSrcStart));
+        preview.sourceStart = newSrcStart;
+        preview.timelineStart = newTl;
+      } else {
+        // trim-right
+        const others = otherClipsOnTrack(curState, d.origTrackId, d.clipId);
+        const maxEndTl = maxRightEdge(others, d.origTimelineStart);
+
+        let newSrcEnd = d.origSourceEnd + dtime;
+        newSrcEnd = Math.max(d.origSourceStart + MIN_CLIP_DURATION, Math.min(d.mediaDuration, newSrcEnd));
+        let rightEdge = d.origTimelineStart + (newSrcEnd - d.origSourceStart);
+
+        const rightSnap = snap(rightEdge, snapPoints, threshold);
+        if (rightSnap !== null) {
+          const delta = rightSnap - rightEdge;
+          newSrcEnd += delta;
+          rightEdge = d.origTimelineStart + (newSrcEnd - d.origSourceStart);
+          snapTime = rightEdge;
+        }
+
+        // Don't extend past the next clip on this track.
+        if (rightEdge > maxEndTl) {
+          newSrcEnd -= rightEdge - maxEndTl;
+          rightEdge = maxEndTl;
+        }
+        newSrcEnd = Math.max(d.origSourceStart + MIN_CLIP_DURATION, Math.min(d.mediaDuration, newSrcEnd));
+        preview.sourceEnd = newSrcEnd;
+      }
+
+      setDrag({ ...d, preview, hasMoved, snapTime });
+    };
+
+    const onUp = () => {
+      const d = dragRef.current;
+      if (!d) {
+        setDrag(null);
+        return;
+      }
+      if (d.hasMoved) {
+        if (d.mode === 'move') {
+          dispatch({
+            type: 'MOVE_CLIP',
+            payload: {
+              clipId: d.clipId,
+              newTimelineStart: d.preview.timelineStart,
+              newTrackId: d.preview.trackId !== d.origTrackId ? d.preview.trackId : undefined,
+            },
+          });
+        } else {
+          dispatch({
+            type: 'TRIM_CLIP',
+            payload: {
+              clipId: d.clipId,
+              sourceStart: d.preview.sourceStart,
+              sourceEnd: d.preview.sourceEnd,
+              timelineStart: d.preview.timelineStart,
+            },
+          });
+        }
+      }
+      setDrag(null);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    // Only re-run when drag instance changes (clip or mode). preview/hasMoved updates
+    // go through dragRef so we don't re-subscribe mid-drag.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag?.clipId, drag?.mode]);
+
+  const beginDrag = useCallback(
+    (e: React.MouseEvent, clipId: string, mode: DragMode) => {
+      if (e.button !== 0) return;
+      const clip = stateRef.current.clips[clipId];
+      if (!clip) return;
+      // For trim-right, we clamp by source media duration on video clips.
+      // Text clips have no underlying media — use a generous ceiling so the
+      // user can extend the clip freely.
+      const mediaDuration =
+        clip.kind === 'video'
+          ? stateRef.current.mediaFiles[clip.mediaFileId]?.duration ?? clip.sourceEnd
+          : 3600;
+      e.stopPropagation();
+      e.preventDefault();
+      setDrag({
+        mode,
+        clipId,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        origTimelineStart: clip.timelineStart,
+        origSourceStart: clip.sourceStart,
+        origSourceEnd: clip.sourceEnd,
+        origTrackId: clip.trackId,
+        mediaDuration,
+        preview: {
+          timelineStart: clip.timelineStart,
+          sourceStart: clip.sourceStart,
+          sourceEnd: clip.sourceEnd,
+          trackId: clip.trackId,
+        },
+        hasMoved: false,
+        snapTime: null,
+      });
+    },
+    []
+  );
 
   // Close context menu on click outside
   useEffect(() => {
@@ -105,10 +434,12 @@ export function TimelinePanel() {
     return () => window.removeEventListener('click', handler);
   }, []);
 
-  // Handle dropping media onto a track
+  // Handle dropping media onto a track: place the clip at the cursor X, clamped
+  // into the nearest free gap on the target track.
   const handleTrackDrop = useCallback(
     (e: React.DragEvent, trackId: string) => {
       e.preventDefault();
+      e.stopPropagation();
       const mediaFileId = e.dataTransfer.getData('mediaFileId');
       if (!mediaFileId) return;
 
@@ -116,30 +447,43 @@ export function TimelinePanel() {
       if (!media) return;
 
       const track = state.tracks[trackId];
-      let timelineStart = 0;
-      if (track) {
-        // Place after last clip
-        for (const clipId of track.clips) {
-          const c = state.clips[clipId];
-          if (c) {
-            const end = c.timelineStart + (c.sourceEnd - c.sourceStart);
-            if (end > timelineStart) timelineStart = end;
-          }
-        }
+      if (!track) return;
+
+      // Compute drop position from cursor X within the timeline content.
+      const contentEl = (e.currentTarget as HTMLElement).closest('.timeline-content') as HTMLElement | null;
+      let proposedTl = 0;
+      if (contentEl) {
+        const rect = contentEl.getBoundingClientRect();
+        proposedTl = Math.max(0, (e.clientX - rect.left) / zoom);
       }
 
+      // Prevent overlap — snap into the closest free gap.
+      const others = otherClipsOnTrack(state, trackId, '__new__');
+      const clipDur = media.duration;
+      const timelineStart = clampToFreeSpace(proposedTl, clipDur, others);
+
       const clipId = newId('clip');
-      const clip: Clip = {
+      const clip: VideoClip = {
         id: clipId,
+        kind: 'video',
         mediaFileId,
         sourceStart: 0,
         sourceEnd: media.duration,
         timelineStart,
         trackId,
+        volume: 1,
+        muted: false,
+        pan: 0,
+        duckSourceClipId: null,
+        duckAmount: 0.6,
+        fit: 'contain',
+        transform: { ...DEFAULT_TRANSFORM },
+        color: null,
+        transitionOut: null,
       };
       dispatch({ type: 'ADD_CLIP', payload: { clip, trackId } });
     },
-    [state.mediaFiles, state.tracks, state.clips, dispatch]
+    [state, dispatch, zoom]
   );
 
   const handleClipClick = (e: React.MouseEvent, clipId: string) => {
@@ -159,7 +503,13 @@ export function TimelinePanel() {
     e.preventDefault();
     e.stopPropagation();
     dispatch({ type: 'SELECT_CLIP', payload: [clipId] });
-    setContextMenu({ x: e.clientX, y: e.clientY, clipId });
+    // Clamp to viewport so the menu never renders off-screen.
+    const MENU_W = 200;
+    const MENU_H = 96;
+    const margin = 8;
+    const x = Math.min(e.clientX, window.innerWidth - MENU_W - margin);
+    const y = Math.min(e.clientY, window.innerHeight - MENU_H - margin);
+    setContextMenu({ x: Math.max(margin, x), y: Math.max(margin, y), clipId });
   };
 
   const handleSplit = () => {
@@ -179,6 +529,40 @@ export function TimelinePanel() {
     dispatch({ type: 'DELETE_CLIP', payload: { clipId: contextMenu.clipId } });
     setContextMenu(null);
   };
+
+  const handleToggleCrossfade = () => {
+    if (!contextMenu) return;
+    const clip = state.clips[contextMenu.clipId];
+    if (!clip) return;
+    dispatch({
+      type: 'SET_CLIP_TRANSITION',
+      payload: {
+        clipId: clip.id,
+        transition: clip.transitionOut ? null : { kind: 'fade', duration: 1 },
+      },
+    });
+    setContextMenu(null);
+  };
+
+  // Whether the context-menu's clip has an adjacent next clip on the same track
+  // (gating "Add crossfade" to cases where the fade actually has a neighbor).
+  const contextClip = contextMenu ? state.clips[contextMenu.clipId] : null;
+  let hasAdjacentNext = false;
+  if (contextClip) {
+    const track = state.tracks[contextClip.trackId];
+    if (track) {
+      const sorted = track.clips
+        .map((cid) => state.clips[cid])
+        .filter((c): c is Clip => Boolean(c))
+        .sort((a, b) => a.timelineStart - b.timelineStart);
+      const idx = sorted.findIndex((c) => c.id === contextClip.id);
+      if (idx >= 0 && idx < sorted.length - 1) {
+        const next = sorted[idx + 1];
+        const end = contextClip.timelineStart + (contextClip.sourceEnd - contextClip.sourceStart);
+        hasAdjacentNext = Math.abs(next.timelineStart - end) < ADJACENCY_EPS;
+      }
+    }
+  }
 
   // Click on empty timeline area to set playhead
   const handleTimelineClick = (e: React.MouseEvent) => {
@@ -286,62 +670,136 @@ export function TimelinePanel() {
           onClick={handleTimelineClick}
         >
           <div
-            className="timeline-ruler"
+            className="timeline-content"
             style={{ width: timelineWidth, position: 'relative' }}
           >
-            {rulerMarks}
-          </div>
+            <div className="timeline-ruler">{rulerMarks}</div>
 
-          <div
-            className="tracks-container"
-            style={{ width: timelineWidth, position: 'relative' }}
-          >
-            {state.trackOrder.map((trackId) => {
-              const track = state.tracks[trackId];
+            <div className="tracks-container">
+              {state.trackOrder.map((trackId) => {
+                const track = state.tracks[trackId];
+                return (
+                  <div
+                    key={trackId}
+                    className="track-row"
+                    data-track-id={trackId}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => handleTrackDrop(e, trackId)}
+                  >
+                    {track.clips.map((clipId) => {
+                      const clip = state.clips[clipId];
+                      if (!clip) return null;
+                      const isDragging = drag?.clipId === clipId;
+                      if (isDragging && drag!.preview.trackId !== trackId) return null;
+
+                      const effClip: Clip = isDragging
+                        ? ({
+                            ...clip,
+                            timelineStart: drag!.preview.timelineStart,
+                            sourceStart: drag!.preview.sourceStart,
+                            sourceEnd: drag!.preview.sourceEnd,
+                          } as Clip)
+                        : clip;
+                      const isVideo = effClip.kind === 'video';
+                      const videoClip = isVideo ? (effClip as VideoClip) : null;
+                      const media = videoClip ? state.mediaFiles[videoClip.mediaFileId] : undefined;
+                      const clipDuration = effClip.sourceEnd - effClip.sourceStart;
+                      const left = effClip.timelineStart * zoom;
+                      const width = clipDuration * zoom;
+                      const isSelected = state.selectedClipIds.includes(clipId);
+
+                      const label = effClip.kind === 'video' ? media?.name ?? 'Clip' : effClip.text || 'Text';
+                      const tooltip = `${label}\n${formatRulerTime(clipDuration)}`;
+
+                      const showHandles = width > 24;
+                      const hasFadeOut = !!effClip.transitionOut;
+
+                      return (
+                        <div
+                          key={clipId}
+                          className={`clip clip-${effClip.kind} ${isSelected ? 'selected' : ''} ${isDragging ? 'dragging' : ''}`}
+                          style={{ left, width: Math.max(width, 4) }}
+                          title={tooltip}
+                          onMouseDown={(e) => beginDrag(e, clipId, 'move')}
+                          onClick={(e) => {
+                            if (drag?.hasMoved) {
+                              e.stopPropagation();
+                              return;
+                            }
+                            handleClipClick(e, clipId);
+                          }}
+                          onContextMenu={(e) => handleClipContextMenu(e, clipId)}
+                        >
+                          {effClip.kind === 'video' && media ? (
+                            <ClipFilmStrip clip={effClip as VideoClip} media={media} widthPx={width} />
+                          ) : null}
+                          <span>{width > 60 ? label : ''}</span>
+                          {hasFadeOut && width > 12 && (
+                            <div
+                              className="clip-fade-indicator"
+                              aria-hidden
+                              style={{ width: Math.min(width * 0.4, 40) }}
+                            />
+                          )}
+                          {showHandles && (
+                            <>
+                              <div
+                                className="clip-trim-handle left"
+                                onMouseDown={(e) => beginDrag(e, clipId, 'trim-left')}
+                              />
+                              <div
+                                className="clip-trim-handle right"
+                                onMouseDown={(e) => beginDrag(e, clipId, 'trim-right')}
+                              />
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Cross-track drag preview: render the dragging clip at its preview track if different. */}
+            {drag && drag.preview.trackId !== drag.origTrackId && (() => {
+              const clip = state.clips[drag.clipId];
+              if (!clip) return null;
+              const trackIdx = state.trackOrder.indexOf(drag.preview.trackId);
+              if (trackIdx < 0) return null;
+              const label =
+                clip.kind === 'video'
+                  ? state.mediaFiles[clip.mediaFileId]?.name ?? 'Clip'
+                  : clip.text || 'Text';
+              const dur = drag.preview.sourceEnd - drag.preview.sourceStart;
+              const left = drag.preview.timelineStart * zoom;
+              const width = dur * zoom;
+              const top = trackIdx * TRACK_ROW_HEIGHT + 4;
               return (
                 <div
-                  key={trackId}
-                  className="track-row"
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => handleTrackDrop(e, trackId)}
+                  className={`clip clip-${clip.kind} dragging`}
+                  style={{
+                    left,
+                    width: Math.max(width, 4),
+                    top,
+                    position: 'absolute',
+                    pointerEvents: 'none',
+                  }}
                 >
-                  {track.clips.map((clipId) => {
-                    const clip = state.clips[clipId];
-                    if (!clip) return null;
-                    const media = state.mediaFiles[clip.mediaFileId];
-                    const clipDuration = clip.sourceEnd - clip.sourceStart;
-                    const left = clip.timelineStart * zoom;
-                    const width = clipDuration * zoom;
-                    const isSelected =
-                      state.selectedClipIds.includes(clipId);
-
-                    const clipStartFmt = formatRulerTime(clip.sourceStart);
-                    const clipEndFmt = formatRulerTime(clip.sourceEnd);
-                    const tooltip = `${media?.name ?? 'Clip'}\n${clipStartFmt} - ${clipEndFmt} (${formatRulerTime(clipDuration)})`;
-
-                    return (
-                      <div
-                        key={clipId}
-                        className={`clip ${isSelected ? 'selected' : ''}`}
-                        style={{ left, width: Math.max(width, 4), position: 'absolute' }}
-                        title={tooltip}
-                        onClick={(e) => handleClipClick(e, clipId)}
-                        onContextMenu={(e) =>
-                          handleClipContextMenu(e, clipId)
-                        }
-                      >
-                        <ClipFilmStrip clip={clip} media={media} widthPx={width} />
-                        <span style={{ position: 'relative', zIndex: 1, padding: '0 4px' }}>
-                          {width > 60 ? (media?.name ?? 'Clip') : ''}
-                        </span>
-                      </div>
-                    );
-                  })}
+                  <span>{width > 60 ? label : ''}</span>
                 </div>
               );
-            })}
+            })()}
 
-            {/* Playhead */}
+            {/* Snap indicator */}
+            {drag?.snapTime != null && (
+              <div
+                className="snap-indicator"
+                style={{ left: drag.snapTime * zoom }}
+              />
+            )}
+
+            {/* Playhead spans the ruler and all tracks */}
             <div className="playhead" style={{ left: playheadLeft }} />
           </div>
         </div>
@@ -358,10 +816,14 @@ export function TimelinePanel() {
             <span>✂️ Split at Playhead</span>
             <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 11 }}>S</span>
           </button>
-          <button
-            className="context-menu-item danger"
-            onClick={handleDelete}
-          >
+          {(hasAdjacentNext || contextClip?.transitionOut) && (
+            <button className="context-menu-item" onClick={handleToggleCrossfade}>
+              <span>
+                {contextClip?.transitionOut ? '✕ Remove crossfade' : '◈ Add crossfade'}
+              </span>
+            </button>
+          )}
+          <button className="context-menu-item danger" onClick={handleDelete}>
             <span>🗑️ Delete</span>
             <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 11 }}>Del</span>
           </button>

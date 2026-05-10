@@ -1,8 +1,12 @@
 import { useRef, useState, useCallback } from 'react';
 import { useProject } from '../../state/ProjectContext';
-import type { MediaFile } from '../../types/project';
+import type { MediaFile, TextClip } from '../../types/project';
+import { DEFAULT_TRANSFORM } from '../../types/project';
 import { newId } from '../../utils/id';
 import { getOrCreateObjectUrl, saveFile } from '../../services/mediaStore';
+import { Inspector } from '../Inspector/Inspector';
+
+const DEFAULT_TEXT_DURATION = 3;
 
 export function Sidebar() {
   const { state, dispatch } = useProject();
@@ -31,29 +35,58 @@ export function Sidebar() {
           });
         };
 
-        video.onloadedmetadata = async () => {
+        const finalizeMeta = async (duration: number) => {
           const objectUrl = getOrCreateObjectUrl(id, file);
           const mediaFile: MediaFile = {
             id,
             name: file.name,
             objectUrl,
             file,
-            duration: video.duration,
+            duration,
             width: video.videoWidth,
             height: video.videoHeight,
             status: 'ready',
-            hasAudio: true, // optimistic; confirmed during export probe
+            hasAudio: true,
           };
           dispatch({ type: 'ADD_MEDIA_FILE', payload: mediaFile });
           URL.revokeObjectURL(probeUrl);
           try {
             await saveFile(id, file);
           } catch (err) {
-            // On quota / private-mode failure, mark as missing so user knows this won't persist.
             console.warn('IDB saveFile failed:', err);
             dispatch({ type: 'SET_MEDIA_STATUS', payload: { id, status: 'missing' } });
           }
           finishLoading();
+        };
+
+        video.onloadedmetadata = () => {
+          // Chrome/Firefox often report Infinity or a too-short duration for videos
+          // with missing/non-standard duration metadata (VBR mp4s, WebM, videos with
+          // fragmented moov). Force the browser to scan to the real end by seeking
+          // past it — the browser clamps `currentTime` to the true last frame and
+          // updates `duration` to the accurate value.
+          const reported = video.duration;
+          const looksBad = !Number.isFinite(reported) || reported <= 0;
+          if (!looksBad) {
+            void finalizeMeta(reported);
+            return;
+          }
+
+          const onTimeUpdate = () => {
+            video.removeEventListener('timeupdate', onTimeUpdate);
+            const real = video.duration;
+            video.currentTime = 0;
+            void finalizeMeta(Number.isFinite(real) && real > 0 ? real : 0);
+          };
+          video.addEventListener('timeupdate', onTimeUpdate);
+          // A very large seek makes most browsers reveal the true duration.
+          try {
+            video.currentTime = Number.MAX_SAFE_INTEGER;
+          } catch {
+            // If seek fails, fall back to the reported value (user gets a bad clip).
+            video.removeEventListener('timeupdate', onTimeUpdate);
+            void finalizeMeta(Number.isFinite(reported) && reported > 0 ? reported : 0);
+          }
         };
         video.onerror = () => {
           URL.revokeObjectURL(probeUrl);
@@ -91,6 +124,26 @@ export function Sidebar() {
     state.selectedClipIds.forEach((clipId) => {
       dispatch({ type: 'DELETE_CLIP', payload: { clipId } });
     });
+  };
+
+  const handleAddText = () => {
+    const trackId = state.trackOrder[0];
+    if (!trackId) return;
+    const clip: TextClip = {
+      id: newId('clip'),
+      kind: 'text',
+      sourceStart: 0,
+      sourceEnd: DEFAULT_TEXT_DURATION,
+      timelineStart: state.playheadPosition,
+      trackId,
+      text: 'Your text',
+      color: '#ffffff',
+      fontSize: 8,
+      transform: { ...DEFAULT_TRANSFORM },
+      transitionOut: null,
+    };
+    dispatch({ type: 'ADD_CLIP', payload: { clip, trackId } });
+    dispatch({ type: 'SELECT_CLIP', payload: [clip.id] });
   };
 
   const mediaFiles = Object.values(state.mediaFiles);
@@ -184,6 +237,9 @@ export function Sidebar() {
       <div>
         <div className="sidebar-section-title">Quick Tools</div>
         <div className="quick-tools">
+          <button className="tool-btn" onClick={handleAddText}>
+            🅣 Add Text
+          </button>
           <button
             className="tool-btn"
             disabled={state.selectedClipIds.length !== 1}
@@ -200,6 +256,8 @@ export function Sidebar() {
           </button>
         </div>
       </div>
+
+      <Inspector />
     </aside>
   );
 }

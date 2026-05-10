@@ -1,4 +1,4 @@
-import type { Clip, MediaFile, MediaStatus } from '../types/project';
+import type { Clip, ColorAdjust, MediaFile, MediaStatus, Transform, TransitionOut, VideoFit } from '../types/project';
 
 export type Action =
   | { type: 'ADD_MEDIA_FILE'; payload: MediaFile }
@@ -9,6 +9,27 @@ export type Action =
   | { type: 'SPLIT_CLIP'; payload: { clipId: string; splitTime: number } }
   | { type: 'DELETE_CLIP'; payload: { clipId: string } }
   | { type: 'MOVE_CLIP'; payload: { clipId: string; newTimelineStart: number; newTrackId?: string } }
+  | {
+      type: 'TRIM_CLIP';
+      payload: { clipId: string; sourceStart: number; sourceEnd: number; timelineStart: number };
+    }
+  | { type: 'SET_CLIP_VOLUME'; payload: { clipId: string; volume: number } }
+  | { type: 'SET_CLIP_MUTED'; payload: { clipId: string; muted: boolean } }
+  | { type: 'SET_CLIP_TRANSITION'; payload: { clipId: string; transition: TransitionOut | null } }
+  | { type: 'SET_CLIP_TRANSFORM'; payload: { clipId: string; transform: Partial<Transform> } }
+  | { type: 'SET_CLIP_FIT'; payload: { clipId: string; fit: VideoFit } }
+  | { type: 'SET_CLIP_COLOR'; payload: { clipId: string; color: ColorAdjust | null } }
+  | { type: 'SET_CLIP_PAN'; payload: { clipId: string; pan: number } }
+  | { type: 'SET_CLIP_DUCK'; payload: { clipId: string; sourceClipId: string | null; amount: number } }
+  | {
+      type: 'UPDATE_TEXT_CLIP';
+      payload: {
+        clipId: string;
+        text?: string;
+        color?: string;
+        fontSize?: number;
+      };
+    }
   | { type: 'ADD_TRACK'; payload: { name: string } }
   | { type: 'REMOVE_TRACK'; payload: { trackId: string } }
   | { type: 'SET_PLAYHEAD'; payload: number }

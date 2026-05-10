@@ -34,6 +34,21 @@ const ctx = self as unknown as DedicatedWorkerGlobalScope;
 let ffmpeg: FFmpeg | null = null;
 let timelineDuration = 0;
 let lastProgress = 0;
+let fontLoaded = false;
+
+async function ensureFontLoaded(ff: FFmpeg): Promise<void> {
+  if (fontLoaded) return;
+  try {
+    const resp = await fetch('/fonts/text.ttf');
+    if (!resp.ok) throw new Error(`font fetch ${resp.status}`);
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    await ff.writeFile('text.ttf', bytes);
+    fontLoaded = true;
+  } catch (e) {
+    // Don't crash — exports without text clips still work; text exports will fail cleanly.
+    console.warn('Text font load failed:', e);
+  }
+}
 
 async function load(): Promise<FFmpeg> {
   if (ffmpeg) return ffmpeg;
@@ -79,6 +94,10 @@ ctx.onmessage = async (ev: MessageEvent<ExportRequest>) => {
     const ff = await load();
     timelineDuration = req.timelineDuration;
     lastProgress = 0;
+
+    // Load font when any text clip exists.
+    const hasText = req.tracks.some((t) => t.clips.some((c) => c.kind === 'text'));
+    if (hasText) await ensureFontLoaded(ff);
 
     for (const { logicalName, file } of req.files) {
       await ff.writeFile(logicalName, await fetchFile(file));

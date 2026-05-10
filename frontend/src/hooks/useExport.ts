@@ -4,7 +4,10 @@ import { getMemoryCeilingBytes, runExport } from '../services/exportEngine';
 import {
   computeCanvas,
   computeTimelineDuration,
+  type ExportClip,
+  type ExportTextClip,
   type ExportTrack,
+  type ExportVideoClip,
   type QualityPreset,
 } from '../services/filterGraph';
 
@@ -31,26 +34,38 @@ export function useExport() {
 
   const referencedMediaIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const clip of Object.values(state.clips)) ids.add(clip.mediaFileId);
+    for (const clip of Object.values(state.clips)) {
+      if (clip.kind === 'video') ids.add(clip.mediaFileId);
+    }
     return ids;
   }, [state.clips]);
 
   const readiness = useMemo(() => {
     let hydrating = 0;
     let missing = 0;
+    let orphan = 0;
     for (const id of referencedMediaIds) {
       const m = state.mediaFiles[id];
-      if (!m) continue;
+      if (!m) {
+        // Clip references a media record that doesn't exist anymore.
+        orphan++;
+        continue;
+      }
       if (m.status === 'hydrating') hydrating++;
       else if (m.status === 'missing') missing++;
+      else if (!m.file) {
+        // Ready but no in-memory File — cannot feed FFmpeg. Count as missing.
+        missing++;
+      }
     }
+    const hasClips = Object.keys(state.clips).length > 0;
     return {
-      hasClips: referencedMediaIds.size > 0,
+      hasClips,
       hydrating,
-      missing,
-      allReady: referencedMediaIds.size > 0 && hydrating === 0 && missing === 0,
+      missing: missing + orphan,
+      allReady: hasClips && hydrating === 0 && missing === 0 && orphan === 0,
     };
-  }, [referencedMediaIds, state.mediaFiles]);
+  }, [referencedMediaIds, state.mediaFiles, state.clips]);
 
   const revokeDownloadUrl = useCallback(() => {
     if (previousUrlRef.current) {
@@ -87,18 +102,14 @@ export function useExport() {
       revokeDownloadUrl();
 
       try {
-        // Resolve Files + gather metadata for involved media only.
+        // Involved video media (text clips need no media).
         const involvedIds: string[] = [];
         for (const id of referencedMediaIds) {
           const m = state.mediaFiles[id];
           if (m && m.file) involvedIds.push(id);
         }
-        if (involvedIds.length === 0) {
-          setExportState({ phase: 'error', progress: 0, error: 'No playable media in project', downloadUrl: null });
-          return;
-        }
 
-        // Memory ceiling pre-check (input files only; output comparable).
+        // Memory ceiling pre-check.
         const ceiling = getMemoryCeilingBytes();
         let totalSize = 0;
         for (const id of involvedIds) {
@@ -117,7 +128,6 @@ export function useExport() {
           return;
         }
 
-        // Build input mapping: mediaId -> logical name used in FFmpeg FS.
         const mediaInputNames: Record<string, string> = {};
         const files: { logicalName: string; mediaId: string; file: File }[] = [];
         const mediaHasAudio: Record<string, boolean> = {};
@@ -128,30 +138,77 @@ export function useExport() {
           const logicalName = `input_${idx}${ext}`;
           mediaInputNames[id] = logicalName;
           mediaHasAudio[id] = m.hasAudio;
-          probeMediaIds.push(id); // probe every time — cheap, authoritative
+          probeMediaIds.push(id);
           files.push({ logicalName, mediaId: id, file: m.file! });
         });
 
-        // Build TrackDef[] — clips sorted by timeline_start within each track, filter to involved media only.
+        // Build ExportTracks — sorted by timeline_start. The export pipeline
+        // groups adjacent transition-linked video clips into xfade runs internally.
+        const skippedClips: string[] = [];
         const tracks: ExportTrack[] = state.trackOrder
           .map((trackId) => {
             const track = state.tracks[trackId];
-            return {
-              trackId,
-              clips: track.clips
-                .map((cid) => state.clips[cid])
-                .filter(Boolean)
-                .filter((c) => mediaInputNames[c.mediaFileId])
-                .sort((a, b) => a.timelineStart - b.timelineStart)
-                .map((c) => ({
+            const sorted = track.clips
+              .map((cid) => state.clips[cid])
+              .filter(Boolean)
+              .sort((a, b) => a.timelineStart - b.timelineStart);
+
+            const out: ExportClip[] = [];
+
+            for (const c of sorted) {
+              if (c.kind === 'video') {
+                if (!mediaInputNames[c.mediaFileId]) {
+                  skippedClips.push(c.id);
+                  continue;
+                }
+
+                const exp: ExportVideoClip = {
+                  kind: 'video',
+                  id: c.id,
                   mediaId: c.mediaFileId,
                   sourceStart: c.sourceStart,
                   sourceEnd: c.sourceEnd,
                   timelineStart: c.timelineStart,
-                })),
-            };
+                  volume: c.volume,
+                  muted: c.muted,
+                  pan: c.pan,
+                  duckSourceClipId: c.duckSourceClipId,
+                  duckAmount: c.duckAmount,
+                  fit: c.fit,
+                  transform: c.transform,
+                  color: c.color,
+                  transitionOut: c.transitionOut,
+                };
+                out.push(exp);
+              } else {
+                const exp: ExportTextClip = {
+                  kind: 'text',
+                  id: c.id,
+                  text: c.text,
+                  color: c.color,
+                  fontSize: c.fontSize,
+                  transform: c.transform,
+                  timelineStart: c.timelineStart,
+                  sourceStart: c.sourceStart,
+                  sourceEnd: c.sourceEnd,
+                };
+                out.push(exp);
+              }
+            }
+
+            return { trackId, clips: out };
           })
           .filter((t) => t.clips.length > 0);
+
+        if (skippedClips.length > 0) {
+          setExportState({
+            phase: 'error',
+            progress: 0,
+            error: `${skippedClips.length} video clip(s) reference media that isn't available. Re-import the missing file(s) or delete those clips and try again.`,
+            downloadUrl: null,
+          });
+          return;
+        }
 
         if (tracks.length === 0) {
           setExportState({ phase: 'error', progress: 0, error: 'No clips to export', downloadUrl: null });
