@@ -1,12 +1,11 @@
-
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
-  font-family: 'Inter', sans-serif; /* Eğer font eklediysen aktif olur */
+  font-family: 'Inter', sans-serif;
 }
 
-/* 2. ANA LAYOUT */
+/* ANA LAYOUT */
 .main-layout {
   display: flex; 
   height: 100vh;
@@ -14,22 +13,22 @@
   background-color: #121212;
 }
 
-/* 3. SIDEBAR (SOL PANEL) */
+/* SIDEBAR (SOL PANEL KAPSAYICISI) */
 .sidebar {
-  width: 340px; /* Kutuların yan yana rahat sığması için genişliği biraz artırdık */
+  width: 340px; 
   background-color: #1a1d23; 
-  padding: 30px 0; /* İçeriği biz manuel hizalayacağız */
+  padding: 30px 0; 
   display: flex;
   flex-direction: column;
 }
 
-/* 4. LOGO ALANI */
+/* LOGO ALANI */
 .logo-container {
   display: flex;
   align-items: center;
   gap: 12px;
   margin-bottom: 40px;
-  padding-left: 25px; /* Logo ve yazı içeriye doğru */
+  padding-left: 25px; 
 }
 
 .app-icon {
@@ -45,72 +44,23 @@
   letter-spacing: 0.5px;
 }
 
-/* 5. AYIRICI ÇİZGİ */
+/* AYIRICI ÇİZGİLER */
 .sidebar-divider {
   height: 1px;
   background-color: #4a4d55;
   width: 90%;
-  align-self: center; /* Çizgiyi ortala */
+  align-self: center; 
   margin-top: -20px;
   margin-bottom: 25px;
   opacity: 0.4;
 }
 
-/* 6. YENİ MENÜ SİSTEMİ (YAN YANA KARE KUTULAR) */
-.menu-grid {
-  display: flex;
-  flex-direction: row;  /* Yan yana dizilim */
-  flex-wrap: nowrap;      /* Sığmazsa alta geçmesin diye nowrap yazdık */
-  gap: 10px;            /* Kutular arası boşluk */
-  padding: 0 20px;      /* Kenarlardan boşluk */
-  justify-content: flex-start; /* Sola yaslı başlasınlar */
+.sidebar-dynamic-content {
+  padding: 10px;
+  margin-top: 10px;
 }
 
-/* Her bir kare menü kartı */
-.menu-card {
-  display: flex;
-  flex-direction: column; /* İkon üstte, yazı altta */
-  align-items: center;    /* Yatayda ortala */
-  gap: 8px;
-  cursor: pointer;
-  width: 70px;            /* Kutu genişliği */
-}
-
-/* İkonun içindeki koyu kutu */
-.icon-box {
-  width: 50px;
-  height: 50px;
-  background-color: #2c2f36;
-  border-radius: 12px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  font-size: 1.3rem;
-  color: #a0a0a0;
-  transition: all 0.2s ease;
-}
-
-/* Yazı stili */
-.card-label {
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: #a0a0a0;
-}
-
-/* HOVER & ACTIVE DURUMLARI */
-.menu-card:hover .icon-box,
-.menu-card.active .icon-box {
-  background-color: #383c44;
-  color: white;
-  transform: translateY(-2px); /* Hafif yukarı zıplama efekti */
-}
-
-.menu-card:hover .card-label,
-.menu-card.active .card-label {
-  color: white;
-}
-
-/* 8. SAĞDAKİ İÇERİK ALANI */
+/* SAĞDAKİ İÇERİK ALANI */
 .content {
   flex: 1;
   display: flex;
@@ -119,176 +69,3 @@
   align-items: center;
   color: white;
 }
-/* 1. Varsayılan (Gri) Durum - Tüm ikon kutuları başta gri */
-.icon-box {
-  width: 50px;
-  height: 50px;
-  background-color: #2c2f36;
-  border-radius: 12px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  font-size: 1.3rem;
-  color: #a0a0a0;
-  transition: all 0.3s ease; /* Renk geçişi yumuşak olsun */
-}
-
-/* 2. MEDIA - Üzerine gelince Mavi olsun */
-.menu-card:nth-child(1):hover .icon-box,
-.menu-card:nth-child(1).active .icon-box {
-  background-color: #3b82f6; /* Modern bir mavi */
-  color: white;
-  box-shadow: 0 0 15px rgba(59, 130, 246, 0.4); /* Hafif parlama efekti */
-}
-
-/* 3. AUDIO - Üzerine gelince Mor olsun */
-.menu-card:nth-child(2):hover .icon-box,
-.menu-card:nth-child(2).active .icon-box {
-  background-color: #8b5cf6; /* Modern bir mor */
-  color: white;
-  box-shadow: 0 0 15px rgba(139, 92, 246, 0.4);
-}
-
-/* 4. TEXT - Üzerine gelince Yeşil/Turkuaz olsun */
-.menu-card:nth-child(3):hover .icon-box,
-.menu-card:nth-child(3).active .icon-box {
-  background-color: #10b981; /* Modern bir yeşil */
-  color: white;
-  box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
-}
-
-/* 5. EFFECTS - Üzerine gelince senin o sevdiğin Turuncu/Pembe geçiş olsun */
-.menu-card:nth-child(4):hover .icon-box,
-.menu-card:nth-child(4).active .icon-box {
-  background: linear-gradient(135deg, #ff8a65, #e91e63);
-  color: white;
-  box-shadow: 0 0 15px rgba(233, 30, 99, 0.4);
-}
-/* Resimlerin kutuyu patlatmasını engelleyen kritik kod */
-.menu-img-icon {
-  width: 100%;           /* Kutunun genişliği kadar ol */
-  height: 100%;          /* Kutunun yüksekliği kadar ol */
-  object-fit: contain;   /* Resmi yamultmadan kutuya sığdır */
-  display: block;        /* Altındaki boşlukları temizler */
-}
-
-/* İkon kutularının boyutunu sabitleyelim (Eğer değiştiyse) */
-.icon-box {
-  width: 50px;
-  height: 50px;
-  background-color: #2c2f36;
-  border-radius: 12px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  overflow: hidden;      /* İçinden taşan olursa gizle */
-  padding: 8px;          /* İkonun kenarlara yapışmaması için */
-}
-
-  .sidebar-dynamic-content {
-  padding: 10px;
-  margin-top: 10px;
-}
-
-.sidebar-drop-zone {
-  border: 2px dashed #3e4451;
-  border-radius: 12px;
-  padding: 20px 10px;
-  text-align: center;
-  background-color: #1a1d23;
-}
-
-.sidebar-upload-icon {
-  font-size: 24px;
-  color: #7c4dff;
-  display: block;
-  margin-bottom: 8px;
-}
-
-.sidebar-drop-zone h4 {
-  font-size: 14px;
-  margin: 5px 0;
-  color: white;
-}
-
-.sidebar-drop-zone p {
-  font-size: 11px;
-  color: #8e9297;
-  margin-bottom: 12px;
-}
-
-.sidebar-browse-btn {
-  background: linear-gradient(135deg, #6272ff 0%, #8b5cf6 100%);
-  color: white;
-  border: none;
-  padding: 8px 15px;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: bold;
-  cursor: pointer;
-  width: 100%; /* Sidebar içinde tam genişlik */
-}
-
-.quick-tools-container {
-  margin-top: 20px;
-  padding: 0 10px;
-}
-
-.quick-tools-header {
-  color: #8e9297;
-  font-size: 11px;
-  font-weight: bold;
-  letter-spacing: 1.2px;
-  margin-top: 20px; /* Bu değeri artırdıkça tüm grup aşağı kayar */
-  margin-bottom: 15px;
-  text-align: center; /* Tasarımdaki gibi ortalı durması için */
-  text-transform: uppercase;
-}
-
-.quick-tool-card {
-  background-color: #1a1d23;
-  border-radius: 12px; /* Tasarımdaki gibi daha yumuşak köşeler */
-  padding: 8px 12px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: all 0.2s ease;
-  width: 100%; /* Kartın genişliğini kapsayıcısına eşitledik */
-  box-sizing: border-box; /* Padding ve border genişliğe dahil olsun */
-}
-
-.quick-tool-card:hover {
-  background-color: #252932;
-  border-color: #3e4451;
-  transform: translateX(3px); /* Üstüne gelince hafif sağa kaysın */
-}
-
-.tool-icon-box {
-  width: 32px;
-  height: 32px;
-  background-color: #2c2f36;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  color: #7c4dff; /* İkon rengi tasarımındaki gibi morumsu */
-flex-shrink: 0; /* İkon kutusunun küçülmesini engeller */
-}
-
-.tool-name {
-  color: white;
-  font-size: 13px;
-  line-height: 1.2;
-}
-
-.tool-sub {
-  color: #8e9297;
-  font-size: 10px;
-  margin-top: 1px;
-  line-height: 1.2;
-}
-

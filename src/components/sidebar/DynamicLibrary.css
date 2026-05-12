@@ -1,0 +1,38 @@
+.sidebar-drop-zone {
+  border: 2px dashed #3e4451;
+  border-radius: 12px;
+  padding: 20px 10px;
+  text-align: center;
+  background-color: #1a1d23;
+}
+
+.sidebar-upload-icon {
+  font-size: 24px;
+  color: #7c4dff;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.sidebar-drop-zone h4 {
+  font-size: 14px;
+  margin: 5px 0;
+  color: white;
+}
+
+.sidebar-drop-zone p {
+  font-size: 11px;
+  color: #8e9297;
+  margin-bottom: 12px;
+}
+
+.sidebar-browse-btn {
+  background: linear-gradient(135deg, #6272ff 0%, #8b5cf6 100%);
+  color: white;
+  border: none;
+  padding: 8px 15px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  width: 100%; 
+}
