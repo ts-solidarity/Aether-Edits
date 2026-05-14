@@ -10,6 +10,7 @@ import effectsIcon from './assets/effects_icon.jpeg';
 import MenuCard from './components/sidebar/MenuCard';
 import DynamicLibrary from './components/sidebar/DynamicLibrary';
 import QuickTools from './components/sidebar/QuickTools';
+import RightSidebar from './components/sidebar/RightSidebar';
 
 function App() {
   const [activeMenu, setActiveMenu] = useState('media');
@@ -27,9 +28,7 @@ function App() {
         
         {/* Logo Bölümü */}
         <div className="logo-container">
-        
           <img src={logoGorseli} alt="Logo" className="app-icon" />
-        
           <span className="logo-text">AETHER EDIT</span>
         </div>
         
@@ -59,10 +58,13 @@ function App() {
 
       </aside>
 
-      {/* Ana Önizleme ve Timeline Alanı (İleride doldurulacak) */}
+      {/* Ana Önizleme ve Timeline Alanı */}
       <main className="content">
         {}
       </main>
+
+      {/* Sağ Properties Panel */}
+      <RightSidebar />
     </div>
   );
 }
