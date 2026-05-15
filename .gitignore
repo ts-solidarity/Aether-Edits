@@ -1,23 +1,14 @@
 # Dependencies
 node_modules/
-__pycache__/
-*.pyc
-venv/
-.venv/
 
-# Build
+# Build output
 frontend/dist/
-*.egg-info/
-
-# Media storage
-backend/uploads/
-backend/exports/
 
 # Environment
 .env
 *.env.local
 
-# IDE
+# IDE / editor
 .vscode/
 .idea/
 *.swp
@@ -27,10 +18,12 @@ backend/exports/
 .DS_Store
 Thumbs.db
 
-# Coverage
-.coverage
-htmlcov/
+# Test / preview artifacts (Playwright MCP screenshots, ad-hoc debug captures)
+.playwright-mcp/
+/*.png
+/canvas-data-url.txt
+*.output
 
-# SQLite
-*.db
-*.sqlite3
+# Logs
+*.log
+npm-debug.log*
