@@ -1,11 +1,17 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useProject } from '../../state/ProjectContext';
-import type { Clip, ImageClip, ProjectState, TextClip, Transform, VideoClip } from '../../types/project';
-import { FONT_FAMILIES, clipDuration, compareClipsForDrawing } from '../../types/project';
+import type { Clip, TextClip, VideoClip } from '../../types/project';
+import { clipDuration } from '../../types/project';
+import {
+  computeClipAlpha,
+  drawImageClip,
+  drawTextClip,
+  drawVideoClip,
+  findActiveClipsAtTime,
+} from '../../services/canvasCompositor';
 import { CanvasOverlay, type PendingTransform } from './CanvasOverlay';
 
 const ACTIVE_WINDOW_SECONDS = 3;
-const ADJACENCY_EPS = 0.01;
 
 function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -20,203 +26,6 @@ function getTimelineDuration(clips: Record<string, Clip>): number {
     if (end > max) max = end;
   }
   return max;
-}
-
-/** All clips active at time t, sorted bottom-to-top by draw order:
- *  primary clip.zIndex, secondary track index, tertiary timelineStart. */
-function findActiveClipsAtTime(state: ProjectState, time: number): Clip[] {
-  const out: Clip[] = [];
-  for (const trackId of state.trackOrder) {
-    const track = state.tracks[trackId];
-    if (!track) continue;
-    for (const clipId of track.clips) {
-      const clip = state.clips[clipId];
-      if (!clip) continue;
-      const end = clip.timelineStart + clipDuration(clip);
-      if (time >= clip.timelineStart && time < end) out.push(clip);
-    }
-  }
-  out.sort((a, b) => compareClipsForDrawing(a, b, state.trackOrder));
-  return out;
-}
-
-/** The immediately previous clip on the same track (by timelineStart order), if any. */
-function prevClipOnTrack(state: ProjectState, clip: Clip): Clip | null {
-  const track = state.tracks[clip.trackId];
-  if (!track) return null;
-  const sorted = track.clips
-    .map((cid) => state.clips[cid])
-    .filter((c): c is Clip => Boolean(c))
-    .sort((a, b) => a.timelineStart - b.timelineStart);
-  const idx = sorted.findIndex((c) => c.id === clip.id);
-  return idx > 0 ? sorted[idx - 1] : null;
-}
-
-/** Alpha multiplier for a clip at time t, based on fade-in (from prev transitionOut) and
- *  fade-out (from own transitionOut). Matches FFmpeg: fades live in the last/first D/2 of clip. */
-function computeClipAlpha(state: ProjectState, clip: Clip, t: number): number {
-  let alpha = 1;
-  const dur = clipDuration(clip);
-  const tlEnd = clip.timelineStart + dur;
-
-  if (clip.transitionOut && clip.transitionOut.duration > 0) {
-    const D = Math.min(clip.transitionOut.duration, dur);
-    const halfD = D / 2;
-    const fadeStart = tlEnd - halfD;
-    if (t >= fadeStart && t < tlEnd) {
-      alpha *= Math.max(0, (tlEnd - t) / halfD);
-    }
-  }
-
-  const prev = prevClipOnTrack(state, clip);
-  if (prev && prev.transitionOut && prev.transitionOut.duration > 0) {
-    const prevEnd = prev.timelineStart + clipDuration(prev);
-    if (Math.abs(prevEnd - clip.timelineStart) < ADJACENCY_EPS) {
-      const D = Math.min(prev.transitionOut.duration, dur);
-      const halfD = D / 2;
-      const fadeInEnd = clip.timelineStart + halfD;
-      if (t >= clip.timelineStart && t < fadeInEnd) {
-        alpha *= Math.max(0, (t - clip.timelineStart) / halfD);
-      }
-    }
-  }
-
-  return Math.max(0, Math.min(1, alpha));
-}
-
-/** CSS filter string approximating FFmpeg `eq` + `hue` for live preview.
- *  Note: CSS brightness is multiplicative (1+b), FFmpeg eq=brightness=b is additive.
- *  We use 1+b as the closest visual approximation; expect minor tone differences vs. export. */
-function colorAdjustToCssFilter(c: VideoClip['color']): string {
-  if (!c) return 'none';
-  return `brightness(${(1 + c.brightness).toFixed(3)}) contrast(${c.contrast.toFixed(3)}) saturate(${c.saturation.toFixed(3)}) hue-rotate(${c.hue.toFixed(1)}deg)`;
-}
-
-/** Draw a video clip into the canvas with letterbox / cover / free transform.
- *  - 'contain': preserve aspect, center, letterbox excess (current default).
- *  - 'cover': preserve aspect, center, crop excess.
- *  - 'free': apply transform.x/y/scale/rotation around clip center; base size = letterbox-fit.
- *  Color adjust (if any) is applied via ctx.filter for the duration of the draw.
- */
-function drawVideoClip(
-  ctx: CanvasRenderingContext2D,
-  video: HTMLVideoElement,
-  clip: VideoClip,
-  w: number,
-  h: number,
-  transformOverride?: Transform
-): void {
-  const vw = video.videoWidth;
-  const vh = video.videoHeight;
-  if (!vw || !vh) return;
-
-  const filter = colorAdjustToCssFilter(clip.color);
-  const restoreFilter = filter !== 'none';
-  if (restoreFilter) ctx.filter = filter;
-
-  if (clip.fit === 'cover') {
-    const k = Math.max(w / vw, h / vh);
-    const dw = vw * k;
-    const dh = vh * k;
-    ctx.drawImage(video, (w - dw) / 2, (h - dh) / 2, dw, dh);
-  } else if (clip.fit === 'free') {
-    const t = transformOverride ?? clip.transform;
-    const baseK = Math.min(w / vw, h / vh);
-    const k = baseK * t.scale;
-    const dw = vw * k;
-    const dh = vh * k;
-    ctx.save();
-    ctx.translate(t.x * w, t.y * h);
-    if (t.rotation !== 0) ctx.rotate((t.rotation * Math.PI) / 180);
-    ctx.drawImage(video, -dw / 2, -dh / 2, dw, dh);
-    ctx.restore();
-  } else {
-    // 'contain' — letterbox.
-    const scale = Math.min(w / vw, h / vh);
-    const dw = Math.round(vw * scale);
-    const dh = Math.round(vh * scale);
-    const dx = Math.floor((w - dw) / 2);
-    const dy = Math.floor((h - dh) / 2);
-    ctx.drawImage(video, dx, dy, dw, dh);
-  }
-
-  if (restoreFilter) ctx.filter = 'none';
-}
-
-function drawTextClip(
-  ctx: CanvasRenderingContext2D,
-  clip: TextClip,
-  w: number,
-  h: number,
-  transformOverride?: Transform
-): void {
-  const t = transformOverride ?? clip.transform;
-  const fontSizePx = Math.round((clip.fontSize / 100) * h * t.scale);
-  if (fontSizePx < 1) return;
-
-  const family = FONT_FAMILIES.find((f) => f.key === clip.fontFamily)?.cssStack ??
-    "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
-
-  ctx.save();
-  ctx.translate(t.x * w, t.y * h);
-  if (t.rotation !== 0) ctx.rotate((t.rotation * Math.PI) / 180);
-  ctx.font = `700 ${fontSizePx}px ${family}`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.lineWidth = Math.max(2, Math.round(fontSizePx / 24));
-  ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
-  ctx.strokeText(clip.text, 0, 0);
-  ctx.fillStyle = clip.color;
-  ctx.fillText(clip.text, 0, 0);
-  ctx.restore();
-}
-
-/** Draw an image clip — same fit/transform model as drawVideoClip, but the
- *  source is an HTMLImageElement. */
-function drawImageClip(
-  ctx: CanvasRenderingContext2D,
-  img: HTMLImageElement,
-  clip: ImageClip,
-  w: number,
-  h: number,
-  transformOverride?: Transform
-): void {
-  const iw = img.naturalWidth;
-  const ih = img.naturalHeight;
-  if (!iw || !ih || !img.complete) return;
-
-  const filter = clip.color
-    ? `brightness(${(1 + clip.color.brightness).toFixed(3)}) contrast(${clip.color.contrast.toFixed(3)}) saturate(${clip.color.saturation.toFixed(3)}) hue-rotate(${clip.color.hue.toFixed(1)}deg)`
-    : 'none';
-  const restoreFilter = filter !== 'none';
-  if (restoreFilter) ctx.filter = filter;
-
-  if (clip.fit === 'cover') {
-    const k = Math.max(w / iw, h / ih);
-    const dw = iw * k;
-    const dh = ih * k;
-    ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
-  } else if (clip.fit === 'free') {
-    const t = transformOverride ?? clip.transform;
-    const baseK = Math.min(w / iw, h / ih);
-    const k = baseK * t.scale;
-    const dw = iw * k;
-    const dh = ih * k;
-    ctx.save();
-    ctx.translate(t.x * w, t.y * h);
-    if (t.rotation !== 0) ctx.rotate((t.rotation * Math.PI) / 180);
-    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
-    ctx.restore();
-  } else {
-    const scale = Math.min(w / iw, h / ih);
-    const dw = Math.round(iw * scale);
-    const dh = Math.round(ih * scale);
-    const dx = Math.floor((w - dw) / 2);
-    const dy = Math.floor((h - dh) / 2);
-    ctx.drawImage(img, dx, dy, dw, dh);
-  }
-
-  if (restoreFilter) ctx.filter = 'none';
 }
 
 export function PreviewPanel() {

@@ -730,9 +730,11 @@ export function TimelinePanel() {
     const rect = scroll.getBoundingClientRect();
     const scrollLeft = scroll.scrollLeft;
     const x = clientX - rect.left + scrollLeft;
-    const time = Math.max(0, x / zoom);
+    // Clamp to [0, duration] so scrubbing past the rightmost clip doesn't
+    // leave the playhead at a nonsense timeline position.
+    const time = Math.max(0, Math.min(duration, x / zoom));
     dispatch({ type: 'SET_PLAYHEAD', payload: time });
-  }, [dispatch, zoom]);
+  }, [dispatch, zoom, duration]);
 
   const handleTimelineMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;

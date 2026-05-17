@@ -1,16 +1,17 @@
 import { useState, useCallback, useRef, useMemo } from 'react';
 import { useProject } from '../state/ProjectContext';
-import { getMemoryCeilingBytes, runExport } from '../services/exportEngine';
+import { checkExportSupport } from '../services/browserSupport';
 import {
-  computeCanvas,
-  computeTimelineDuration,
-  type ExportClip,
-  type ExportImageClip,
-  type ExportTextClip,
-  type ExportTrack,
-  type ExportVideoClip,
+  runWebCodecsExport,
+  type ExportRequest,
   type QualityPreset,
-} from '../services/filterGraph';
+  type SerializedMediaFile,
+} from '../services/webcodecsExporter';
+import { renderAudioToPcm, type PcmPayload } from '../services/audioGraphBuilder';
+import type { Clip, ProjectState, VideoClip } from '../types/project';
+import { clipDuration } from '../types/project';
+
+export type { QualityPreset };
 
 export type ExportPhase = 'idle' | 'waiting' | 'loading-core' | 'exporting' | 'done' | 'error';
 
@@ -28,10 +29,13 @@ const initial: ExportState = {
   downloadUrl: null,
 };
 
+const EXPORT_FPS = 30;
+
 export function useExport() {
-  const { state, dispatch } = useProject();
+  const { state } = useProject();
   const [exportState, setExportState] = useState<ExportState>(initial);
   const previousUrlRef = useRef<string | null>(null);
+  const abortRef = useRef<(() => void) | null>(null);
 
   const referencedMediaIds = useMemo(() => {
     const ids = new Set<string>();
@@ -48,14 +52,12 @@ export function useExport() {
     for (const id of referencedMediaIds) {
       const m = state.mediaFiles[id];
       if (!m) {
-        // Clip references a media record that doesn't exist anymore.
         orphan++;
         continue;
       }
       if (m.status === 'hydrating') hydrating++;
       else if (m.status === 'missing') missing++;
       else if (!m.file) {
-        // Ready but no in-memory File — cannot feed FFmpeg. Count as missing.
         missing++;
       }
     }
@@ -76,6 +78,12 @@ export function useExport() {
   }, []);
 
   const reset = useCallback(() => {
+    // If an export is in flight, signal abort. The worker honors it on the
+    // next frame boundary and the promise rejects with "Export aborted".
+    if (abortRef.current) {
+      abortRef.current();
+      abortRef.current = null;
+    }
     revokeDownloadUrl();
     setExportState(initial);
   }, [revokeDownloadUrl]);
@@ -103,184 +111,115 @@ export function useExport() {
       revokeDownloadUrl();
 
       try {
-        // Involved video media (text clips need no media).
-        const involvedIds: string[] = [];
+        // Confirm WebCodecs supports the project canvas + codec.
+        const support = await checkExportSupport({
+          width: state.canvas.width,
+          height: state.canvas.height,
+        });
+        if (!support.supported || !support.videoCodec) {
+          setExportState({
+            phase: 'error',
+            progress: 0,
+            error: support.reason ?? 'Browser does not support WebCodecs export.',
+            downloadUrl: null,
+          });
+          return;
+        }
+
+        // Serialize the involved media for the worker. We pass the File handle
+        // by reference — Files survive structured clone across postMessage.
+        const mediaFiles: Record<string, SerializedMediaFile> = {};
         for (const id of referencedMediaIds) {
           const m = state.mediaFiles[id];
-          if (m && m.file) involvedIds.push(id);
+          if (!m?.file) continue;
+          mediaFiles[id] = {
+            id: m.id,
+            width: m.width,
+            height: m.height,
+            duration: m.duration,
+            kind: m.kind,
+            hasAudio: m.hasAudio,
+            file: m.file,
+          };
         }
 
-        // Memory ceiling pre-check.
-        const ceiling = getMemoryCeilingBytes();
-        let totalSize = 0;
-        for (const id of involvedIds) {
-          const m = state.mediaFiles[id];
-          if (m?.file) totalSize += m.file.size;
+        // Strip out any clip whose media is missing.
+        const usableClips: Record<string, Clip> = {};
+        for (const [id, clip] of Object.entries(state.clips)) {
+          if ((clip.kind === 'video' || clip.kind === 'image') && !mediaFiles[clip.mediaFileId]) continue;
+          usableClips[id] = clip;
         }
-        if (totalSize > ceiling) {
-          const mb = Math.round(totalSize / (1024 * 1024));
-          const cap = Math.round(ceiling / (1024 * 1024));
-          setExportState({
-            phase: 'error',
-            progress: 0,
-            error: `Project too large (${mb} MB). FFmpeg.wasm can't handle more than ~${cap} MB of input on this browser. Split the project and export in sections.`,
-            downloadUrl: null,
-          });
+        if (Object.keys(usableClips).length === 0) {
+          setExportState({ phase: 'error', progress: 0, error: 'No exportable clips.', downloadUrl: null });
           return;
         }
 
-        const mediaInputNames: Record<string, string> = {};
-        const files: { logicalName: string; mediaId: string; file: File }[] = [];
-        const mediaHasAudio: Record<string, boolean> = {};
-        const mediaKinds: Record<string, 'video' | 'image'> = {};
-        const probeMediaIds: string[] = [];
-        involvedIds.forEach((id, idx) => {
-          const m = state.mediaFiles[id]!;
-          const ext = m.name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] ?? '.mp4';
-          const logicalName = `input_${idx}${ext}`;
-          mediaInputNames[id] = logicalName;
-          mediaHasAudio[id] = m.kind === 'image' ? false : m.hasAudio;
-          mediaKinds[id] = m.kind;
-          // Image media don't have audio streams, so skip the probe entirely
-          // — ffmpeg -i on an image generates noisy logs.
-          if (m.kind === 'video') probeMediaIds.push(id);
-          files.push({ logicalName, mediaId: id, file: m.file! });
-        });
+        // Trim each track to only the usable clips.
+        const tracks: typeof state.tracks = {};
+        for (const [trackId, track] of Object.entries(state.tracks)) {
+          tracks[trackId] = {
+            ...track,
+            clips: track.clips.filter((cid) => usableClips[cid]),
+          };
+        }
 
-        // Build ExportTracks — sorted by timeline_start. The export pipeline
-        // groups adjacent transition-linked video clips into xfade runs internally.
-        const skippedClips: string[] = [];
-        const tracks: ExportTrack[] = state.trackOrder
-          .map((trackId) => {
-            const track = state.tracks[trackId];
-            const sorted = track.clips
-              .map((cid) => state.clips[cid])
-              .filter(Boolean)
-              .sort((a, b) => a.timelineStart - b.timelineStart);
-
-            const out: ExportClip[] = [];
-
-            for (const c of sorted) {
-              if (c.kind === 'video') {
-                if (!mediaInputNames[c.mediaFileId]) {
-                  skippedClips.push(c.id);
-                  continue;
-                }
-
-                const exp: ExportVideoClip = {
-                  kind: 'video',
-                  id: c.id,
-                  mediaId: c.mediaFileId,
-                  sourceStart: c.sourceStart,
-                  sourceEnd: c.sourceEnd,
-                  timelineStart: c.timelineStart,
-                  volume: c.volume,
-                  muted: c.muted,
-                  pan: c.pan,
-                  duckSourceClipId: c.duckSourceClipId,
-                  duckAmount: c.duckAmount,
-                  fit: c.fit,
-                  transform: c.transform,
-                  color: c.color,
-                  speed: c.speed,
-                  zIndex: c.zIndex,
-                  transitionOut: c.transitionOut,
-                };
-                out.push(exp);
-              } else if (c.kind === 'image') {
-                if (!mediaInputNames[c.mediaFileId]) {
-                  skippedClips.push(c.id);
-                  continue;
-                }
-                const exp: ExportImageClip = {
-                  kind: 'image',
-                  id: c.id,
-                  mediaId: c.mediaFileId,
-                  sourceStart: 0,
-                  sourceEnd: c.sourceEnd,
-                  timelineStart: c.timelineStart,
-                  fit: c.fit,
-                  transform: c.transform,
-                  color: c.color,
-                  speed: c.speed,
-                  zIndex: c.zIndex,
-                  transitionOut: c.transitionOut,
-                };
-                out.push(exp);
-              } else {
-                const exp: ExportTextClip = {
-                  kind: 'text',
-                  id: c.id,
-                  text: c.text,
-                  color: c.color,
-                  fontSize: c.fontSize,
-                  fontFamily: c.fontFamily,
-                  transform: c.transform,
-                  speed: c.speed,
-                  zIndex: c.zIndex,
-                  timelineStart: c.timelineStart,
-                  sourceStart: c.sourceStart,
-                  sourceEnd: c.sourceEnd,
-                };
-                out.push(exp);
-              }
+        // Render audio on the main thread — Web Audio (OfflineAudioContext,
+        // decodeAudioData) is unavailable in Workers on Firefox and older
+        // Chromium. The PCM result then crosses the postMessage boundary as
+        // transferables, costing zero copies.
+        let audioPcm: PcmPayload | null = null;
+        if (support.audioCodec && support.audioEncoderCodec) {
+          const audioClips: VideoClip[] = [];
+          for (const clip of Object.values(usableClips)) {
+            if (clip.kind === 'video' && !clip.muted && clip.volume > 0) {
+              const m = mediaFiles[clip.mediaFileId];
+              if (m?.hasAudio) audioClips.push(clip);
             }
-
-            return { trackId, clips: out };
-          })
-          .filter((t) => t.clips.length > 0);
-
-        if (skippedClips.length > 0) {
-          setExportState({
-            phase: 'error',
-            progress: 0,
-            error: `${skippedClips.length} video clip(s) reference media that isn't available. Re-import the missing file(s) or delete those clips and try again.`,
-            downloadUrl: null,
-          });
-          return;
-        }
-
-        if (tracks.length === 0) {
-          setExportState({ phase: 'error', progress: 0, error: 'No clips to export', downloadUrl: null });
-          return;
-        }
-
-        const involvedMedia = involvedIds.map((id) => state.mediaFiles[id]!);
-        // Project canvas drives both preview and export — WYSIWYG. If the
-        // project canvas is somehow invalid, fall back to source-derived dims.
-        const canvas: [number, number] =
-          state.canvas.width > 0 && state.canvas.height > 0
-            ? [state.canvas.width, state.canvas.height]
-            : computeCanvas(involvedMedia);
-        const timelineDuration = computeTimelineDuration(tracks);
-
-        setExportState({ phase: 'loading-core', progress: 0, error: null, downloadUrl: null });
-
-        const blob = await runExport(
-          {
-            type: 'export',
-            files,
-            tracks,
-            mediaInputNames,
-            mediaHasAudio,
-            mediaKinds,
-            probeMediaIds,
-            canvas,
-            timelineDuration,
-            quality,
-          },
-          {
-            onLoaded: () => {
-              setExportState((s) => (s.phase === 'loading-core' ? { ...s, phase: 'exporting' } : s));
-            },
-            onProbed: (mediaId, hasAudio) => {
-              dispatch({ type: 'SET_MEDIA_HAS_AUDIO', payload: { id: mediaId, hasAudio } });
-            },
-            onProgress: (fraction) => {
-              setExportState((s) => ({ ...s, progress: fraction * 100 }));
-            },
           }
-        );
+          if (audioClips.length > 0) {
+            const totalDuration = computeTimelineDuration(usableClips);
+            try {
+              audioPcm = await renderAudioToPcm({
+                clips: audioClips.map((c) => ({
+                  clip: c,
+                  file: mediaFiles[c.mediaFileId].file,
+                  hasAudio: mediaFiles[c.mediaFileId].hasAudio,
+                })),
+                duration: totalDuration,
+                sampleRate: 48000,
+                prevClipOnTrack: makePrevClipOnTrackLookup(state),
+              });
+            } catch (e) {
+              console.warn('Audio render failed, exporting silent video:', e);
+            }
+          }
+        }
+
+        const req: ExportRequest = {
+          type: 'export',
+          clips: usableClips,
+          tracks,
+          trackOrder: state.trackOrder,
+          mediaFiles,
+          canvas: { width: state.canvas.width, height: state.canvas.height },
+          quality,
+          videoCodec: support.videoCodec,
+          audioCodec: audioPcm ? support.audioCodec : null,
+          audioEncoderCodec: audioPcm ? support.audioEncoderCodec : null,
+          audioPcm,
+          fps: EXPORT_FPS,
+        };
+
+        setExportState({ phase: 'exporting', progress: 0, error: null, downloadUrl: null });
+
+        const handle = runWebCodecsExport(req, {
+          onProgress: (fraction) => {
+            setExportState((s) => ({ ...s, progress: fraction * 100 }));
+          },
+        });
+        abortRef.current = handle.abort;
+        const blob = await handle.promise;
+        abortRef.current = null;
 
         const url = URL.createObjectURL(blob);
         previousUrlRef.current = url;
@@ -294,8 +233,36 @@ export function useExport() {
         });
       }
     },
-    [readiness, referencedMediaIds, state, dispatch, revokeDownloadUrl]
+    [readiness, referencedMediaIds, state, revokeDownloadUrl],
   );
 
   return { exportState, startExportFlow, reset, readiness };
+}
+
+function computeTimelineDuration(clips: Record<string, Clip>): number {
+  let max = 0;
+  for (const clip of Object.values(clips)) {
+    const end = clip.timelineStart + clipDuration(clip);
+    if (end > max) max = end;
+  }
+  return max;
+}
+
+/** For audioGraphBuilder.renderAudioToPcm — given a clipId, find the
+ *  immediately previous clip on the same track. Used to apply a fade-in
+ *  mirroring the previous clip's transitionOut. */
+function makePrevClipOnTrackLookup(state: ProjectState): (clipId: string) => VideoClip | null {
+  return (clipId) => {
+    const clip = state.clips[clipId];
+    if (!clip) return null;
+    const track = state.tracks[clip.trackId];
+    if (!track) return null;
+    const sorted = track.clips
+      .map((cid) => state.clips[cid])
+      .filter((c): c is Clip => Boolean(c))
+      .sort((a, b) => a.timelineStart - b.timelineStart);
+    const idx = sorted.findIndex((c) => c.id === clip.id);
+    const prev = idx > 0 ? sorted[idx - 1] : null;
+    return prev && prev.kind === 'video' ? prev : null;
+  };
 }

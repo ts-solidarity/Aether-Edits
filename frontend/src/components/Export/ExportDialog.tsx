@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useProject } from '../../state/ProjectContext';
-import { useExport } from '../../hooks/useExport';
-import type { QualityPreset } from '../../services/filterGraph';
+import { useExport, type QualityPreset } from '../../hooks/useExport';
+import { checkExportSupport, type ExportSupport } from '../../services/browserSupport';
 
 interface ExportDialogProps {
   open: boolean;
@@ -9,15 +9,16 @@ interface ExportDialogProps {
 }
 
 const QUALITY_OPTIONS: { value: QualityPreset; label: string; hint: string }[] = [
-  { value: 'fast', label: 'Fast', hint: 'ultrafast · CRF 26 · best for previews' },
-  { value: 'balanced', label: 'Balanced', hint: 'fast preset · CRF 24' },
-  { value: 'quality', label: 'Quality', hint: 'medium preset · CRF 22 · much slower on wasm' },
+  { value: 'fast', label: 'Fast', hint: '~1.5 Mbps @ 1080p · best for previews' },
+  { value: 'balanced', label: 'Balanced', hint: '~4 Mbps @ 1080p' },
+  { value: 'quality', label: 'Quality', hint: '~7 Mbps @ 1080p · larger files' },
 ];
 
 export function ExportDialog({ open, onClose }: ExportDialogProps) {
   const { state } = useProject();
   const { exportState, startExportFlow, reset, readiness } = useExport();
   const [quality, setQuality] = useState<QualityPreset>('fast');
+  const [support, setSupport] = useState<ExportSupport | null>(null);
 
   // Revoke the download blob URL when the dialog closes or phase leaves 'done'.
   useEffect(() => {
@@ -25,6 +26,17 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
       reset();
     }
   }, [open, reset]);
+
+  // Probe WebCodecs support whenever the dialog opens — canvas dims can change
+  // between sessions and the codec ladder depends on them.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    checkExportSupport({ width: state.canvas.width, height: state.canvas.height }).then((s) => {
+      if (!cancelled) setSupport(s);
+    });
+    return () => { cancelled = true; };
+  }, [open, state.canvas.width, state.canvas.height]);
 
   if (!open) return null;
 
@@ -72,6 +84,10 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               <p style={{ fontSize: 13, color: 'var(--warning)', marginBottom: 20 }}>
                 Add clips to the timeline before exporting.
               </p>
+            ) : support && !support.supported ? (
+              <p style={{ fontSize: 13, color: 'var(--warning)', marginBottom: 20 }}>
+                {support.reason}
+              </p>
             ) : readiness.missing > 0 ? (
               <p style={{ fontSize: 13, color: 'var(--warning)', marginBottom: 20 }}>
                 {readiness.missing} media file{readiness.missing > 1 ? 's are' : ' is'} missing — re-import before exporting.
@@ -83,8 +99,20 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
             ) : (
               <>
                 <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
-                  Export runs in your browser with FFmpeg.wasm — nothing is uploaded.
+                  Export runs in your browser with WebCodecs (hardware-accelerated) — nothing is uploaded.
                 </p>
+                {support && support.supported && !support.audioCodec && (
+                  <p style={{ fontSize: 12, color: 'var(--warning)', marginBottom: 12 }}>
+                    This browser has no audio encoder available — export will be silent.
+                    (Common on Linux Chromium builds; AAC and Opus encoders are both missing.)
+                  </p>
+                )}
+                {support && support.supported && support.audioCodec === 'opus' && (
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12 }}>
+                    Using Opus audio (AAC not available in this browser). The MP4 will play
+                    in Chrome/Firefox/VLC. Safari may not handle MP4-Opus.
+                  </p>
+                )}
                 <div style={{ marginBottom: 16 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text-secondary)' }}>
                     Canvas
@@ -125,7 +153,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               <button
                 className="btn btn-primary"
                 onClick={() => startExportFlow(quality)}
-                disabled={!hasClips || !readiness.allReady}
+                disabled={!hasClips || !readiness.allReady || (support !== null && !support.supported)}
               >
                 Export
               </button>
@@ -142,15 +170,6 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
           </>
         )}
 
-        {exportState.phase === 'loading-core' && (
-          <>
-            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
-              Loading FFmpeg engine (one-time, ~10 MB)…
-            </p>
-            <ProgressBar progress={0} indeterminate />
-          </>
-        )}
-
         {exportState.phase === 'exporting' && (
           <>
             <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
@@ -158,7 +177,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
             </p>
             <ProgressBar progress={exportState.progress} />
             <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
-              In-browser encoding is CPU-bound and can take several minutes for longer clips.
+              Using your browser's hardware H.264 encoder. Should be a few × realtime on a modern machine.
             </p>
           </>
         )}

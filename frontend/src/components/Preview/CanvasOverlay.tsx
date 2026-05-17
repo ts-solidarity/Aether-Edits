@@ -250,24 +250,11 @@ export function CanvasOverlay({
             });
           };
           return (
-            <input
+            <TextEditInput
               key={`edit-${clip.id}`}
-              autoFocus
-              defaultValue={clip.text}
-              onChange={(e) => commit(e.target.value)}
-              onBlur={() => setEditingTextId(null)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  setEditingTextId(null);
-                } else if (e.key === 'Escape') {
-                  e.preventDefault();
-                  setEditingTextId(null);
-                }
-                e.stopPropagation();
-              }}
-              onMouseDown={(e) => e.stopPropagation()}
-              className="overlay-text-editor"
+              initial={clip.text}
+              onCommit={commit}
+              onClose={() => setEditingTextId(null)}
               style={{
                 position: 'absolute',
                 left: cx - w / 2,
@@ -296,6 +283,47 @@ interface HandleProps {
   onPointerDown: (e: React.PointerEvent, mode: DragMode) => void;
   onDoubleClick?: () => void;
   suppressPointer?: boolean;
+}
+
+interface TextEditInputProps {
+  initial: string;
+  onCommit: (value: string) => void;
+  onClose: () => void;
+  style: React.CSSProperties;
+}
+
+/** Inline text editor that commits on Enter / blur, cancels (no commit) on Escape.
+ *  Keeps a local value buffer so per-keystroke UPDATE_TEXT_CLIP dispatches don't
+ *  thrash the reducer, and so Escape can truly revert. */
+function TextEditInput({ initial, onCommit, onClose, style }: TextEditInputProps) {
+  const [value, setValue] = useState(initial);
+  const cancelledRef = useRef(false);
+  return (
+    <input
+      autoFocus
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={() => {
+        if (!cancelledRef.current && value !== initial) onCommit(value);
+        onClose();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (value !== initial) onCommit(value);
+          onClose();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          cancelledRef.current = true;
+          onClose();
+        }
+        e.stopPropagation();
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      className="overlay-text-editor"
+      style={style}
+    />
+  );
 }
 
 /** Approximate text bounding box in display px. Mirrors PreviewPanel.drawTextClip. */

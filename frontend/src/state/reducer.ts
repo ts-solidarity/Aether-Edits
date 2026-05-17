@@ -1,5 +1,5 @@
-import type { ProjectState, Transform } from '../types/project';
-import { DEFAULT_CANVAS } from '../types/project';
+import type { Clip, ProjectState, Transform } from '../types/project';
+import { DEFAULT_CANVAS, MIN_SPEED, clipDuration } from '../types/project';
 import type { Action } from './actions';
 import { newId } from '../utils/id';
 
@@ -102,12 +102,19 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
       const clip = state.clips[clipId];
       if (!clip) return state;
 
-      const dur = clip.sourceEnd - clip.sourceStart;
+      // splitTime is in timeline seconds. Source seconds advance at
+      // `speed × timeline seconds`, so the split point in source space must
+      // multiply the timeline offset by speed.
+      const dur = clipDuration(clip);
       const clipEnd = clip.timelineStart + dur;
       if (splitTime <= clip.timelineStart || splitTime >= clipEnd) return state;
 
       const offsetInClip = splitTime - clip.timelineStart;
-      const splitSourceTime = clip.sourceStart + offsetInClip;
+      const speed = Math.max(MIN_SPEED, (clip as { speed?: number }).speed ?? 1);
+      const splitSourceTime = clip.sourceStart + offsetInClip * speed;
+
+      const track = state.tracks[clip.trackId];
+      if (!track) return state;
 
       const leftId = newId('clip');
       const rightId = newId('clip');
@@ -121,7 +128,6 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
         timelineStart: splitTime,
       };
 
-      const track = state.tracks[clip.trackId];
       const clipIndex = track.clips.indexOf(clipId);
       const newClipList = [...track.clips];
       newClipList.splice(clipIndex, 1, leftId, rightId);
@@ -145,11 +151,22 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
       if (!clip) return state;
 
       const track = state.tracks[clip.trackId];
+      if (!track) return state;
       const { [clipId]: _, ...restClips } = state.clips;
+
+      // Cascade: clear any video clip that was ducking against this one.
+      const cleaned: Record<string, Clip> = {};
+      for (const [id, c] of Object.entries(restClips)) {
+        if (c.kind === 'video' && c.duckSourceClipId === clipId) {
+          cleaned[id] = { ...c, duckSourceClipId: null, duckAmount: 0 };
+        } else {
+          cleaned[id] = c;
+        }
+      }
 
       return {
         ...state,
-        clips: restClips,
+        clips: cleaned,
         tracks: {
           ...state.tracks,
           [clip.trackId]: {
@@ -316,7 +333,7 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
       if (newTrackId && newTrackId !== clip.trackId) {
         const oldTrack = state.tracks[clip.trackId];
         const newTrack = state.tracks[newTrackId];
-        if (!newTrack) return state;
+        if (!oldTrack || !newTrack) return state;
         newTracks = {
           ...state.tracks,
           [clip.trackId]: {
@@ -357,17 +374,24 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
       if (!track) return state;
 
       const { [trackId]: _, ...restTracks } = state.tracks;
-      const restClips = { ...state.clips };
-      track.clips.forEach((clipId) => delete restClips[clipId]);
+      const removedClipIds = new Set(track.clips);
+      const cleaned: Record<string, Clip> = {};
+      for (const [id, c] of Object.entries(state.clips)) {
+        if (removedClipIds.has(id)) continue;
+        // Cascade: clear duck refs that pointed at any clip on the removed track.
+        if (c.kind === 'video' && c.duckSourceClipId && removedClipIds.has(c.duckSourceClipId)) {
+          cleaned[id] = { ...c, duckSourceClipId: null, duckAmount: 0 };
+        } else {
+          cleaned[id] = c;
+        }
+      }
 
       return {
         ...state,
         tracks: restTracks,
-        clips: restClips,
+        clips: cleaned,
         trackOrder: state.trackOrder.filter((id) => id !== trackId),
-        selectedClipIds: state.selectedClipIds.filter(
-          (id) => !track.clips.includes(id)
-        ),
+        selectedClipIds: state.selectedClipIds.filter((id) => !removedClipIds.has(id)),
       };
     }
 
