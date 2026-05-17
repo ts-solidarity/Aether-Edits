@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useProject } from '../../state/ProjectContext';
 import type { Clip, ImageClip, ProjectState, TextClip, Transform, VideoClip } from '../../types/project';
-import { FONT_FAMILIES, clipDuration } from '../../types/project';
+import { FONT_FAMILIES, clipDuration, compareClipsForDrawing } from '../../types/project';
 import { CanvasOverlay, type PendingTransform } from './CanvasOverlay';
 
 const ACTIVE_WINDOW_SECONDS = 3;
@@ -22,7 +22,8 @@ function getTimelineDuration(clips: Record<string, Clip>): number {
   return max;
 }
 
-/** All clips active at time t, in trackOrder ascending (bottom → top). */
+/** All clips active at time t, sorted bottom-to-top by draw order:
+ *  primary clip.zIndex, secondary track index, tertiary timelineStart. */
 function findActiveClipsAtTime(state: ProjectState, time: number): Clip[] {
   const out: Clip[] = [];
   for (const trackId of state.trackOrder) {
@@ -35,6 +36,7 @@ function findActiveClipsAtTime(state: ProjectState, time: number): Clip[] {
       if (time >= clip.timelineStart && time < end) out.push(clip);
     }
   }
+  out.sort((a, b) => compareClipsForDrawing(a, b, state.trackOrder));
   return out;
 }
 

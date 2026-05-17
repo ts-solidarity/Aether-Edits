@@ -9,6 +9,7 @@ export interface ExportVideoClip {
   sourceStart: number;
   sourceEnd: number;
   timelineStart: number;
+  zIndex: number;
   volume: number;
   muted: boolean;
   pan: number;
@@ -31,6 +32,7 @@ export interface ExportImageClip {
   sourceStart: 0;
   sourceEnd: number;
   timelineStart: number;
+  zIndex: number;
   fit: VideoFit;
   transform: Transform;
   color: ColorAdjust | null;
@@ -50,6 +52,7 @@ export interface ExportTextClip {
   timelineStart: number;
   sourceEnd: number;
   sourceStart: number;
+  zIndex: number;
 }
 
 export type ExportClip = ExportVideoClip | ExportImageClip | ExportTextClip;
@@ -180,14 +183,14 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
   // audio.
   const allVideoClips: ExportVideoClip[] = [];
   const allImageClips: ExportImageClip[] = [];
-  const allTextClips: ExportTextClip[] = [];
-  for (const track of tracks) {
+  const allTextClips: { clip: ExportTextClip; trackIndex: number }[] = [];
+  tracks.forEach((track, trackIndex) => {
     for (const clip of track.clips) {
       if (clip.kind === 'video') allVideoClips.push(clip);
       else if (clip.kind === 'image') allImageClips.push(clip);
-      else allTextClips.push(clip);
+      else allTextClips.push({ clip, trackIndex });
     }
-  }
+  });
 
   // Input args. Video media are shared (one -i per media, split filter for reuse).
   // Image clips each get their own input with `-loop 1 -t <dur>` so the input has
@@ -276,8 +279,12 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
     tlEnd: number;
     fit: VideoFit;
     transform: Transform;
+    sortKey: [number, number, number]; // [zIndex, trackIndex, tlStart]
   }> = [];
   const audioChains: string[] = [];
+
+  const trackIndexOf = new Map<string, number>();
+  tracks.forEach((t, i) => trackIndexOf.set(t.trackId, i));
 
   // FFmpeg color names per transition kind that need them.
   // (xfade uses 'transition=fadeblack' / 'fadewhite' directly; no extra color arg needed.)
@@ -315,6 +322,7 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
         prev.transitionOut.duration > 0 &&
         prev.fit !== 'free' &&
         clip.fit !== 'free' &&
+        prev.zIndex === clip.zIndex &&
         adjacent;
       if (chainable) {
         cur.push(clip);
@@ -507,6 +515,7 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
         tlEnd: runTlEnd,
         fit: run[0].fit,
         transform: run[0].transform,
+        sortKey: [run[0].zIndex, trackIndexOf.get(track.trackId) ?? 0, runTlStart],
       });
 
       // Audio cascade. If the entire run has no real audio (every clip muted or
@@ -551,76 +560,79 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
     }
   }
 
-  // Overlay chain: base → each video clip → then text overlays → [outv].
+  // Composite chain: merge media (video/image) layers and text overlays into a
+  // single sequence sorted by z-order. Each step overlays onto the running
+  // accumulator. Sort key: [zIndex, trackIndex, timelineStart].
+  type CompositeStep =
+    | { kind: 'media'; sortKey: [number, number, number]; label: string; tlStart: number; tlEnd: number; fit: VideoFit; transform: Transform }
+    | { kind: 'text'; sortKey: [number, number, number]; clip: ExportTextClip };
+
+  const composites: CompositeStep[] = [];
+  for (const v of videoClipLabels) {
+    composites.push({ kind: 'media', sortKey: v.sortKey, label: v.label, tlStart: v.tlStart, tlEnd: v.tlEnd, fit: v.fit, transform: v.transform });
+  }
+  for (const { clip: t, trackIndex } of allTextClips) {
+    composites.push({ kind: 'text', sortKey: [t.zIndex, trackIndex, t.timelineStart], clip: t });
+  }
+  composites.sort((a, b) => {
+    for (let i = 0; i < 3; i++) if (a.sortKey[i] !== b.sortKey[i]) return a.sortKey[i] - b.sortKey[i];
+    return 0;
+  });
+
   let prev = 'base';
-  if (videoClipLabels.length === 0) {
-    filters.push('[base]null[outv_mid]');
-    prev = 'outv_mid';
+  if (composites.length === 0) {
+    filters.push('[base]null[outv]');
   } else {
-    for (let i = 0; i < videoClipLabels.length; i++) {
-      const { label, tlStart, tlEnd, fit, transform } = videoClipLabels[i];
-      const isLast = i === videoClipLabels.length - 1;
-      const out = isLast && allTextClips.length === 0 ? 'outv' : isLast ? 'outv_mid' : `o${i}`;
-      let xy = '0:0';
-      if (fit === 'free') {
-        // Center the (post-rotate) layer at (W*x_norm, H*y_norm).
-        xy = `(${W}*${transform.x.toFixed(4)})-(overlay_w/2):(${H}*${transform.y.toFixed(4)})-(overlay_h/2)`;
+    for (let i = 0; i < composites.length; i++) {
+      const step = composites[i];
+      const isLast = i === composites.length - 1;
+      const out = isLast ? 'outv' : `o${i}`;
+
+      if (step.kind === 'media') {
+        let xy = '0:0';
+        if (step.fit === 'free') {
+          xy = `(${W}*${step.transform.x.toFixed(4)})-(overlay_w/2):(${H}*${step.transform.y.toFixed(4)})-(overlay_h/2)`;
+        }
+        filters.push(
+          `[${prev}][${step.label}]overlay=${xy}:enable='between(t,${step.tlStart.toFixed(4)},${step.tlEnd.toFixed(4)})'[${out}]`
+        );
+      } else {
+        const t = step.clip;
+        const fontSizePx = Math.max(1, Math.round((t.fontSize / 100) * H * t.transform.scale));
+        const escaped = escapeDrawtext(t.text);
+        const xN = t.transform.x;
+        const yN = t.transform.y;
+        const textDur = (t.sourceEnd - t.sourceStart) / Math.max(0.01, t.speed);
+        const textEnd = t.timelineStart + textDur;
+        const enable = `between(t,${t.timelineStart.toFixed(4)},${textEnd.toFixed(4)})`;
+        const fontfile = fontFileForFamily(t.fontFamily);
+
+        const drawtext =
+          `drawtext=fontfile=${fontfile}:text='${escaped}':fontcolor=${hexToFFmpegColor(t.color)}:` +
+          `fontsize=${fontSizePx}:` +
+          `x=(W*${xN.toFixed(4)})-text_w/2:y=(H*${yN.toFixed(4)})-text_h/2:` +
+          `borderw=2:bordercolor=black@0.6`;
+
+        if (Math.abs(t.transform.rotation) < 0.01) {
+          filters.push(`[${prev}]${drawtext}:enable='${enable}'[${out}]`);
+        } else {
+          const layer = `tx${i}_lyr`;
+          const rotated = `tx${i}_rot`;
+          const angRad = (t.transform.rotation * Math.PI) / 180;
+          filters.push(
+            `color=c=black@0:s=${W}x${H}:d=${DUR.toFixed(4)}:r=${EXPORT_FPS},format=yuva420p,` +
+              `${drawtext}[${layer}]`
+          );
+          filters.push(
+            `[${layer}]rotate=${angRad.toFixed(6)}:c=none:ow=${W}:oh=${H}[${rotated}]`
+          );
+          filters.push(
+            `[${prev}][${rotated}]overlay=0:0:enable='${enable}'[${out}]`
+          );
+        }
       }
-      filters.push(
-        `[${prev}][${label}]overlay=${xy}:enable='between(t,${tlStart.toFixed(4)},${tlEnd.toFixed(4)})'[${out}]`
-      );
       prev = out;
     }
-  }
-
-  // Text overlays: each clip emits a chain that produces [txN_overlay], then composites onto the running base.
-  if (allTextClips.length > 0) {
-    const sortedText = [...allTextClips].sort((a, b) => a.timelineStart - b.timelineStart);
-    for (let i = 0; i < sortedText.length; i++) {
-      const t = sortedText[i];
-      const isLastText = i === sortedText.length - 1;
-      const baseLabel = prev;
-      const composed = isLastText ? 'outv' : `tx${i}`;
-
-      // Effective fontsize accounts for transform.scale.
-      const fontSizePx = Math.max(1, Math.round((t.fontSize / 100) * H * t.transform.scale));
-      const escaped = escapeDrawtext(t.text);
-      const xN = t.transform.x;
-      const yN = t.transform.y;
-      const textDur = (t.sourceEnd - t.sourceStart) / Math.max(0.01, t.speed);
-      const textEnd = t.timelineStart + textDur;
-      const enable = `between(t,${t.timelineStart.toFixed(4)},${textEnd.toFixed(4)})`;
-      const fontfile = fontFileForFamily(t.fontFamily);
-
-      const drawtext =
-        `drawtext=fontfile=${fontfile}:text='${escaped}':fontcolor=${hexToFFmpegColor(t.color)}:` +
-        `fontsize=${fontSizePx}:` +
-        `x=(W*${xN.toFixed(4)})-text_w/2:y=(H*${yN.toFixed(4)})-text_h/2:` +
-        `borderw=2:bordercolor=black@0.6`;
-
-      if (Math.abs(t.transform.rotation) < 0.01) {
-        // No rotation: drawtext directly onto running base, gated by enable=.
-        filters.push(`[${baseLabel}]${drawtext}:enable='${enable}'[${composed}]`);
-      } else {
-        // Rotation: render text onto a transparent canvas-sized layer, rotate it, overlay.
-        const layer = `tx${i}_lyr`;
-        const rotated = `tx${i}_rot`;
-        const angRad = (t.transform.rotation * Math.PI) / 180;
-        filters.push(
-          `color=c=black@0:s=${W}x${H}:d=${DUR.toFixed(4)}:r=${EXPORT_FPS},format=yuva420p,` +
-            `${drawtext}[${layer}]`
-        );
-        filters.push(
-          `[${layer}]rotate=${angRad.toFixed(6)}:c=none:ow=${W}:oh=${H}[${rotated}]`
-        );
-        filters.push(
-          `[${baseLabel}][${rotated}]overlay=0:0:enable='${enable}'[${composed}]`
-        );
-      }
-      prev = composed;
-    }
-  } else if (prev === 'outv_mid') {
-    filters.push('[outv_mid]null[outv]');
   }
 
   // Audio: always-on anullsrc base; amix all real audio + base.

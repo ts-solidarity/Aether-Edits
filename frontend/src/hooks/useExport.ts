@@ -183,6 +183,7 @@ export function useExport() {
                   transform: c.transform,
                   color: c.color,
                   speed: c.speed,
+                  zIndex: c.zIndex,
                   transitionOut: c.transitionOut,
                 };
                 out.push(exp);
@@ -202,6 +203,7 @@ export function useExport() {
                   transform: c.transform,
                   color: c.color,
                   speed: c.speed,
+                  zIndex: c.zIndex,
                   transitionOut: c.transitionOut,
                 };
                 out.push(exp);
@@ -215,6 +217,7 @@ export function useExport() {
                   fontFamily: c.fontFamily,
                   transform: c.transform,
                   speed: c.speed,
+                  zIndex: c.zIndex,
                   timelineStart: c.timelineStart,
                   sourceStart: c.sourceStart,
                   sourceEnd: c.sourceEnd,

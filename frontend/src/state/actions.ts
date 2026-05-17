@@ -22,6 +22,7 @@ export type Action =
   | { type: 'SET_CLIP_PAN'; payload: { clipId: string; pan: number } }
   | { type: 'SET_CLIP_DUCK'; payload: { clipId: string; sourceClipId: string | null; amount: number } }
   | { type: 'SET_CLIP_SPEED'; payload: { clipId: string; speed: number } }
+  | { type: 'SET_CLIP_Z_INDEX'; payload: { clipId: string; zIndex: number } }
   | { type: 'SET_CANVAS'; payload: { width: number; height: number } }
   | {
       type: 'UPDATE_TEXT_CLIP';

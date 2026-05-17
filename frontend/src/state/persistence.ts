@@ -173,6 +173,7 @@ export function deserialize(raw: string): ProjectState | null {
       const kind = (rawClip.kind as Clip['kind']) ?? 'video';
       const transitionOut = safeTransition(rawClip.transitionOut);
       const speed = safeSpeed(rawClip.speed);
+      const zIndex = typeof rawClip.zIndex === 'number' ? Math.round(rawClip.zIndex) : 0;
 
       if (kind === 'text') {
         const transform = fromV2
@@ -186,6 +187,7 @@ export function deserialize(raw: string): ProjectState | null {
           sourceEnd: (rawClip.sourceEnd as number | undefined) ?? 3,
           timelineStart: (rawClip.timelineStart as number | undefined) ?? 0,
           trackId: (rawClip.trackId as string | undefined) ?? 'track-1',
+          zIndex,
           text: (rawClip.text as string | undefined) ?? 'Text',
           color: (rawClip.color as string | undefined) ?? '#ffffff',
           fontSize: (rawClip.fontSize as number | undefined) ?? 8,
@@ -204,6 +206,7 @@ export function deserialize(raw: string): ProjectState | null {
           sourceEnd: (v.sourceEnd as number | undefined) ?? 4,
           timelineStart: (v.timelineStart as number | undefined) ?? 0,
           trackId: (v.trackId as string | undefined) ?? 'track-1',
+          zIndex,
           fit: safeFit(v.fit),
           transform: safeTransform(v.transform),
           color: safeColor(v.color),
@@ -220,6 +223,7 @@ export function deserialize(raw: string): ProjectState | null {
           sourceEnd: (v.sourceEnd as number | undefined) ?? 0,
           timelineStart: (v.timelineStart as number | undefined) ?? 0,
           trackId: (v.trackId as string | undefined) ?? 'track-1',
+          zIndex,
           volume: (v.volume as number | undefined) ?? 1,
           muted: (v.muted as boolean | undefined) ?? false,
           pan: (v.pan as number | undefined) ?? 0,

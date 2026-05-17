@@ -220,6 +220,7 @@ export function CanvasOverlay({
               boxW={box.w}
               boxH={box.h}
               isSelected={isSelected}
+              zIndex={clip.zIndex}
               onPointerDown={(e, mode) => beginDrag(e, clip, mode, t)}
               onDoubleClick={
                 clip.kind === 'text' ? () => setEditingTextId(clip.id) : undefined
@@ -291,6 +292,7 @@ interface HandleProps {
   boxW: number;
   boxH: number;
   isSelected: boolean;
+  zIndex: number;
   onPointerDown: (e: React.PointerEvent, mode: DragMode) => void;
   onDoubleClick?: () => void;
   suppressPointer?: boolean;
@@ -341,6 +343,7 @@ function ClipHandle({
   boxW,
   boxH,
   isSelected,
+  zIndex,
   onPointerDown,
   onDoubleClick,
   suppressPointer,
@@ -359,6 +362,9 @@ function ClipHandle({
         top: cy - h / 2,
         width: w,
         height: h,
+        // Stack handles by clip z-index so the topmost layer's handle catches
+        // pointer events when handles overlap. Selected clip wins ties.
+        zIndex: zIndex + (isSelected ? 1000 : 0),
         transform: `rotate(${transform.rotation}deg)`,
         pointerEvents: suppressPointer ? 'none' : undefined,
       }}

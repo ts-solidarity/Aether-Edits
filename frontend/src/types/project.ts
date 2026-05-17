@@ -85,6 +85,7 @@ export interface VideoClip {
   sourceEnd: number;
   timelineStart: number;
   trackId: string;
+  zIndex: number; // higher draws on top; default 0
   volume: number; // 0..1
   muted: boolean;
   pan: number; // -1 = full left, 0 = center, 1 = full right
@@ -105,6 +106,7 @@ export interface ImageClip {
   sourceEnd: number;   // display duration on the timeline (pre-speed)
   timelineStart: number;
   trackId: string;
+  zIndex: number;
   fit: VideoFit; // default 'free' so resize-on-canvas is the natural interaction
   transform: Transform;
   color: ColorAdjust | null;
@@ -121,6 +123,7 @@ export interface TextClip {
   sourceEnd: number;
   timelineStart: number;
   trackId: string;
+  zIndex: number;
   text: string;
   color: string;
   fontSize: number; // % of canvas height, e.g. 8 = 8% of H
@@ -138,6 +141,34 @@ export function clipDuration(clip: Clip): number {
   const raw = clip.sourceEnd - clip.sourceStart;
   const speed = (clip as { speed?: number }).speed ?? 1;
   return raw / Math.max(MIN_SPEED, speed);
+}
+
+/** Stable composite z-order key. Higher draws on top.
+ *  Primary: clip.zIndex (explicit per-clip layer).
+ *  Secondary: track index (later tracks on top by default).
+ *  Tertiary: timelineStart (later clips on top within a track). */
+export function clipDrawOrder(
+  clip: Clip,
+  trackOrder: string[]
+): [number, number, number] {
+  return [
+    clip.zIndex ?? 0,
+    trackOrder.indexOf(clip.trackId),
+    clip.timelineStart,
+  ];
+}
+
+export function compareClipsForDrawing(
+  a: Clip,
+  b: Clip,
+  trackOrder: string[]
+): number {
+  const ka = clipDrawOrder(a, trackOrder);
+  const kb = clipDrawOrder(b, trackOrder);
+  for (let i = 0; i < ka.length; i++) {
+    if (ka[i] !== kb[i]) return ka[i] - kb[i];
+  }
+  return 0;
 }
 
 export interface Track {

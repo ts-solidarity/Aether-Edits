@@ -58,8 +58,61 @@ export function Inspector() {
         )}
 
         <SpeedField clip={clip} dispatch={dispatch} />
+        <ZIndexField clip={clip} dispatch={dispatch} />
       </div>
     </div>
+  );
+}
+
+function ZIndexField({
+  clip,
+  dispatch,
+}: {
+  clip: Clip;
+  dispatch: React.Dispatch<import('../../state/actions').Action>;
+}) {
+  const { state } = useProject();
+  const allZ = Object.values(state.clips).map((c) => c.zIndex ?? 0);
+  const maxZ = allZ.length ? Math.max(...allZ) : 0;
+  const minZ = allZ.length ? Math.min(...allZ) : 0;
+
+  const set = (z: number) =>
+    dispatch({ type: 'SET_CLIP_Z_INDEX', payload: { clipId: clip.id, zIndex: z } });
+
+  return (
+    <>
+      <div className="inspector-field-group-header">
+        <span>Layer (z-index)</span>
+      </div>
+      <div className="inspector-field inspector-field-stack">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+          <button type="button" className="inspector-chip" onClick={() => set(maxZ + 1)}>
+            ⤒ To front
+          </button>
+          <button type="button" className="inspector-chip" onClick={() => set(minZ - 1)}>
+            ⤓ To back
+          </button>
+          <button type="button" className="inspector-chip" onClick={() => set(clip.zIndex + 1)}>
+            ↑ Forward
+          </button>
+          <button type="button" className="inspector-chip" onClick={() => set(clip.zIndex - 1)}>
+            ↓ Backward
+          </button>
+        </div>
+      </div>
+      <label className="inspector-field">
+        <span>Index</span>
+        <input
+          type="range"
+          min={-20}
+          max={20}
+          step={1}
+          value={clip.zIndex}
+          onChange={(e) => set(Number(e.target.value))}
+        />
+        <span className="inspector-value">{clip.zIndex}</span>
+      </label>
+    </>
   );
 }
 

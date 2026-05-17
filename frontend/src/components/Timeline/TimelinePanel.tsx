@@ -21,6 +21,7 @@ function buildClipFromMedia(
       sourceEnd: media.duration,
       timelineStart,
       trackId,
+      zIndex: 0,
       fit: 'free',
       transform: { ...DEFAULT_TRANSFORM },
       color: null,
@@ -36,6 +37,7 @@ function buildClipFromMedia(
     sourceEnd: media.duration,
     timelineStart,
     trackId,
+    zIndex: 0,
     volume: 1,
     muted: false,
     pan: 0,
@@ -1140,6 +1142,31 @@ export function TimelinePanel() {
               </div>
             </div>
           )}
+          {contextClip && (() => {
+            const all = Object.values(state.clips).map((c) => c.zIndex ?? 0);
+            const max = all.length ? Math.max(...all) : 0;
+            const min = all.length ? Math.min(...all) : 0;
+            const setZ = (z: number) => {
+              dispatch({ type: 'SET_CLIP_Z_INDEX', payload: { clipId: contextClip.id, zIndex: z } });
+              setContextMenu(null);
+            };
+            return (
+              <>
+                <button className="context-menu-item" onClick={() => setZ(max + 1)}>
+                  <span>⤒ Bring to front</span>
+                </button>
+                <button className="context-menu-item" onClick={() => setZ(contextClip.zIndex + 1)}>
+                  <span>↑ Bring forward</span>
+                </button>
+                <button className="context-menu-item" onClick={() => setZ(contextClip.zIndex - 1)}>
+                  <span>↓ Send backward</span>
+                </button>
+                <button className="context-menu-item" onClick={() => setZ(min - 1)}>
+                  <span>⤓ Send to back</span>
+                </button>
+              </>
+            );
+          })()}
           <button className="context-menu-item danger" onClick={handleDelete}>
             <span>🗑️ Delete</span>
             <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 11 }}>Del</span>

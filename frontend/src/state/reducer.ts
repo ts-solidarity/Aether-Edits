@@ -245,6 +245,17 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
       };
     }
 
+    case 'SET_CLIP_Z_INDEX': {
+      const clip = state.clips[action.payload.clipId];
+      if (!clip) return state;
+      const z = Math.max(-9999, Math.min(9999, Math.round(action.payload.zIndex)));
+      if (clip.zIndex === z) return state;
+      return {
+        ...state,
+        clips: { ...state.clips, [clip.id]: { ...clip, zIndex: z } },
+      };
+    }
+
     case 'SET_CLIP_FIT': {
       const clip = state.clips[action.payload.clipId];
       if (!clip || (clip.kind !== 'video' && clip.kind !== 'image')) return state;
