@@ -1,4 +1,4 @@
-<h1 align="center">Montaj</h1>
+<h1 align="center">Aether Edits</h1>
 
 <p align="center">
   A fully client-side, browser-based video editor — timeline, transforms,
@@ -17,9 +17,9 @@
 
 ---
 
-## What is Montaj?
+## What is Aether Edits?
 
-Montaj is a video editor that runs entirely in your browser. You drop a video
+Aether Edits is a video editor that runs entirely in your browser. You drop a video
 in, cut it on a timeline, layer text, apply transitions and color grades,
 and export an MP4 — all without a backend. Source files live in IndexedDB,
 the timeline state in `localStorage`, and the export is rendered by
@@ -47,7 +47,7 @@ two paths are wired together so adding a feature means implementing it twice
 
 ## Screenshot
 
-![Montaj editor](docs/screenshot.png)
+![Aether Edits editor](docs/screenshot.png)
 
 ## Architecture
 

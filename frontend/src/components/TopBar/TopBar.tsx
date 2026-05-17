@@ -23,9 +23,9 @@ export function TopBar({ onExport }: { onExport: () => void }) {
       <div className="topbar-left">
         <div className="topbar-logo">
           <div className="topbar-logo-mark" aria-hidden>
-            <span>M</span>
+            <span>Æ</span>
           </div>
-          Montaj
+          Aether Edits
           <span className="topbar-badge">Beta</span>
         </div>
       </div>

@@ -164,7 +164,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               {exportState.downloadUrl && (
                 <a
                   href={exportState.downloadUrl}
-                  download="montaj-export.mp4"
+                  download="aether-edits-export.mp4"
                   className="btn btn-primary"
                   style={{ textDecoration: 'none' }}
                 >
