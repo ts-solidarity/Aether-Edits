@@ -5,6 +5,7 @@ import {
   computeCanvas,
   computeTimelineDuration,
   type ExportClip,
+  type ExportImageClip,
   type ExportTextClip,
   type ExportTrack,
   type ExportVideoClip,
@@ -35,7 +36,7 @@ export function useExport() {
   const referencedMediaIds = useMemo(() => {
     const ids = new Set<string>();
     for (const clip of Object.values(state.clips)) {
-      if (clip.kind === 'video') ids.add(clip.mediaFileId);
+      if (clip.kind === 'video' || clip.kind === 'image') ids.add(clip.mediaFileId);
     }
     return ids;
   }, [state.clips]);
@@ -131,14 +132,18 @@ export function useExport() {
         const mediaInputNames: Record<string, string> = {};
         const files: { logicalName: string; mediaId: string; file: File }[] = [];
         const mediaHasAudio: Record<string, boolean> = {};
+        const mediaKinds: Record<string, 'video' | 'image'> = {};
         const probeMediaIds: string[] = [];
         involvedIds.forEach((id, idx) => {
           const m = state.mediaFiles[id]!;
           const ext = m.name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] ?? '.mp4';
           const logicalName = `input_${idx}${ext}`;
           mediaInputNames[id] = logicalName;
-          mediaHasAudio[id] = m.hasAudio;
-          probeMediaIds.push(id);
+          mediaHasAudio[id] = m.kind === 'image' ? false : m.hasAudio;
+          mediaKinds[id] = m.kind;
+          // Image media don't have audio streams, so skip the probe entirely
+          // — ffmpeg -i on an image generates noisy logs.
+          if (m.kind === 'video') probeMediaIds.push(id);
           files.push({ logicalName, mediaId: id, file: m.file! });
         });
 
@@ -177,6 +182,26 @@ export function useExport() {
                   fit: c.fit,
                   transform: c.transform,
                   color: c.color,
+                  speed: c.speed,
+                  transitionOut: c.transitionOut,
+                };
+                out.push(exp);
+              } else if (c.kind === 'image') {
+                if (!mediaInputNames[c.mediaFileId]) {
+                  skippedClips.push(c.id);
+                  continue;
+                }
+                const exp: ExportImageClip = {
+                  kind: 'image',
+                  id: c.id,
+                  mediaId: c.mediaFileId,
+                  sourceStart: 0,
+                  sourceEnd: c.sourceEnd,
+                  timelineStart: c.timelineStart,
+                  fit: c.fit,
+                  transform: c.transform,
+                  color: c.color,
+                  speed: c.speed,
                   transitionOut: c.transitionOut,
                 };
                 out.push(exp);
@@ -187,7 +212,9 @@ export function useExport() {
                   text: c.text,
                   color: c.color,
                   fontSize: c.fontSize,
+                  fontFamily: c.fontFamily,
                   transform: c.transform,
+                  speed: c.speed,
                   timelineStart: c.timelineStart,
                   sourceStart: c.sourceStart,
                   sourceEnd: c.sourceEnd,
@@ -228,6 +255,7 @@ export function useExport() {
             tracks,
             mediaInputNames,
             mediaHasAudio,
+            mediaKinds,
             probeMediaIds,
             canvas,
             timelineDuration,

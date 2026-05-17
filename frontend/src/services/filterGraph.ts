@@ -1,4 +1,4 @@
-import type { ColorAdjust, MediaFile, Transform, VideoFit } from '../types/project';
+import type { ColorAdjust, FontFamilyKey, MediaFile, MediaKind, Transform, VideoFit } from '../types/project';
 
 export const EXPORT_FPS = 30;
 const DEFAULT_W = 1920;
@@ -19,9 +19,24 @@ export interface ExportVideoClip {
   fit: VideoFit;
   transform: Transform;
   color: ColorAdjust | null;
+  speed: number;
   // Transition that fades this clip out at its end. If the next clip on the same
   // track is exactly adjacent and neither is fit='free', the export pipeline pairs
   // the two via xfade/acrossfade. Otherwise this becomes a fade-to-black orphan.
+  transitionOut: { kind: import('../types/project').TransitionKind; duration: number } | null;
+}
+
+export interface ExportImageClip {
+  kind: 'image';
+  id: string;
+  mediaId: string;
+  sourceStart: 0;
+  sourceEnd: number;
+  timelineStart: number;
+  fit: VideoFit;
+  transform: Transform;
+  color: ColorAdjust | null;
+  speed: number; // accepted; image is static so visible duration uses clipDuration math upstream
   transitionOut: { kind: import('../types/project').TransitionKind; duration: number } | null;
 }
 
@@ -31,13 +46,15 @@ export interface ExportTextClip {
   text: string;
   color: string; // hex like "#ffffff"
   fontSize: number; // % of canvas height
+  fontFamily: FontFamilyKey;
   transform: Transform;
+  speed: number;
   timelineStart: number;
   sourceEnd: number;
   sourceStart: number;
 }
 
-export type ExportClip = ExportVideoClip | ExportTextClip;
+export type ExportClip = ExportVideoClip | ExportImageClip | ExportTextClip;
 
 export interface ExportTrack {
   trackId: string;
@@ -50,6 +67,8 @@ export interface BuildExportInput {
   tracks: ExportTrack[];
   mediaInputNames: Record<string, string>;
   mediaHasAudio: Record<string, boolean>;
+  /** Per-media-id kind so the orchestrator can pick the right ffmpeg input args (-loop 1 for images). */
+  mediaKinds: Record<string, MediaKind>;
   canvas: [number, number];
   timelineDuration: number;
   quality: QualityPreset;
@@ -116,36 +135,82 @@ const PRESET_FLAGS: Record<QualityPreset, { preset: string; crf: string }> = {
   quality: { preset: 'medium', crf: '22' },
 };
 
+/** Build the atempo filter chain to achieve a target speed.
+ *  atempo accepts factors in [0.5, 2]; we cascade for values outside the range. */
+function atempoChain(speed: number): string[] {
+  if (Math.abs(speed - 1) < 1e-6) return [];
+  const parts: string[] = [];
+  let remaining = speed;
+  while (remaining > 2) {
+    parts.push('atempo=2');
+    remaining /= 2;
+  }
+  while (remaining < 0.5) {
+    parts.push('atempo=0.5');
+    remaining /= 0.5;
+  }
+  if (Math.abs(remaining - 1) > 1e-6) parts.push(`atempo=${remaining.toFixed(4)}`);
+  return parts;
+}
+
+const FONT_FILE_BY_FAMILY: Record<FontFamilyKey, string> = {
+  sans: 'sans.ttf',
+  serif: 'serif.ttf',
+  mono: 'mono.ttf',
+  display: 'display.ttf',
+  handwriting: 'handwriting.ttf',
+};
+
+export function fontFileForFamily(family: FontFamilyKey): string {
+  return FONT_FILE_BY_FAMILY[family] ?? FONT_FILE_BY_FAMILY.sans;
+}
+
 export function buildExportCommand(input: BuildExportInput): BuiltCommand {
-  const { tracks, mediaInputNames, mediaHasAudio, canvas, timelineDuration, quality } = input;
+  const { tracks, mediaInputNames, mediaHasAudio, mediaKinds, canvas, timelineDuration, quality } = input;
   const [W, H] = canvas;
   const DUR = timelineDuration;
 
-  // Collect video clips (for input assignment) and text clips separately.
+  // Collect clips by kind. Video and image both feed into the timed-media pipeline
+  // (geometry + overlay), but they take different input args and only video has
+  // audio.
   const allVideoClips: ExportVideoClip[] = [];
+  const allImageClips: ExportImageClip[] = [];
   const allTextClips: ExportTextClip[] = [];
   for (const track of tracks) {
     for (const clip of track.clips) {
       if (clip.kind === 'video') allVideoClips.push(clip);
+      else if (clip.kind === 'image') allImageClips.push(clip);
       else allTextClips.push(clip);
     }
   }
 
-  // First-seen input ordering for video media.
-  const inputOrder = new Map<string, number>();
-  for (const clip of allVideoClips) {
-    if (!inputOrder.has(clip.mediaId)) inputOrder.set(clip.mediaId, inputOrder.size);
-  }
-
+  // Input args. Video media are shared (one -i per media, split filter for reuse).
+  // Image clips each get their own input with `-loop 1 -t <dur>` so the input has
+  // a finite duration matched to the clip's displayed length.
+  const videoMediaOrder = new Map<string, number>();
+  const imageClipInputIdx = new Map<string, number>();
   const inputArgs: string[] = [];
-  for (const mediaId of inputOrder.keys()) {
-    const name = mediaInputNames[mediaId];
-    if (!name) throw new Error(`No input name for media ${mediaId}`);
+  for (const clip of allVideoClips) {
+    if (videoMediaOrder.has(clip.mediaId)) continue;
+    const idx = videoMediaOrder.size + imageClipInputIdx.size;
+    videoMediaOrder.set(clip.mediaId, idx);
+    const name = mediaInputNames[clip.mediaId];
+    if (!name) throw new Error(`No input name for media ${clip.mediaId}`);
     inputArgs.push('-i', name);
   }
+  for (const clip of allImageClips) {
+    const idx = videoMediaOrder.size + imageClipInputIdx.size;
+    imageClipInputIdx.set(clip.id, idx);
+    const name = mediaInputNames[clip.mediaId];
+    if (!name) throw new Error(`No input name for image ${clip.mediaId}`);
+    const speed = Math.max(0.01, clip.speed);
+    const dur = (clip.sourceEnd - 0) / speed;
+    inputArgs.push('-loop', '1', '-t', dur.toFixed(4), '-i', name);
+  }
 
+  // Per-clip video usage count (for split when a single media is reused).
   const useCount = new Map<string, number>();
-  for (const mediaId of inputOrder.keys()) useCount.set(mediaId, 0);
+  for (const mediaId of videoMediaOrder.keys()) useCount.set(mediaId, 0);
   for (const clip of allVideoClips) {
     useCount.set(clip.mediaId, (useCount.get(clip.mediaId) ?? 0) + 1);
   }
@@ -153,9 +218,10 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
   const filters: string[] = [];
   filters.push(`color=c=black:s=${W}x${H}:d=${DUR.toFixed(4)}:r=${EXPORT_FPS},format=yuv420p[base]`);
 
+  // Source labels for video clips: per media:k via split.
   const vLabels = new Map<string, string>();
   const aLabels = new Map<string, string | null>();
-  for (const [mediaId, idx] of inputOrder) {
+  for (const [mediaId, idx] of videoMediaOrder) {
     const count = useCount.get(mediaId) ?? 0;
     if (count <= 1) {
       vLabels.set(`${mediaId}:0`, `${idx}:v`);
@@ -173,19 +239,28 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
       }
     }
   }
+  // Image clips: one input per clip, src is `[idx:v]`. No audio.
+  const imageSrcLabel = new Map<string, string>();
+  for (const [clipId, idx] of imageClipInputIdx) {
+    imageSrcLabel.set(clipId, `${idx}:v`);
+  }
+  // Silence the unused-mediaKinds variable to keep the build clean even if no
+  // image clips are present.
+  void mediaKinds;
 
   const perMediaSeen = new Map<string, number>();
-  for (const mediaId of inputOrder.keys()) perMediaSeen.set(mediaId, 0);
+  for (const mediaId of videoMediaOrder.keys()) perMediaSeen.set(mediaId, 0);
 
-  // Index every clip's timeline range so duck-source lookup works across tracks.
+  // Index every clip's timeline range (used for duck-source lookup across tracks).
   const clipRange = new Map<string, { tlStart: number; tlEnd: number }>();
   for (const t of tracks) {
     for (const c of t.clips) {
       if (c.kind === 'video') {
-        clipRange.set(c.id, {
-          tlStart: c.timelineStart,
-          tlEnd: c.timelineStart + (c.sourceEnd - c.sourceStart),
-        });
+        const dur = (c.sourceEnd - c.sourceStart) / Math.max(0.01, c.speed);
+        clipRange.set(c.id, { tlStart: c.timelineStart, tlEnd: c.timelineStart + dur });
+      } else if (c.kind === 'image') {
+        const dur = (c.sourceEnd - 0) / Math.max(0.01, c.speed);
+        clipRange.set(c.id, { tlStart: c.timelineStart, tlEnd: c.timelineStart + dur });
       }
     }
   }
@@ -204,15 +279,17 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
 
   for (const track of tracks) {
     const sorted = [...track.clips]
-      .filter((c): c is ExportVideoClip => c.kind === 'video')
+      .filter((c): c is ExportVideoClip | ExportImageClip =>
+        c.kind === 'video' || c.kind === 'image'
+      )
       .sort((a, b) => a.timelineStart - b.timelineStart);
 
-    // Group into runs: A and B share a run if A has transitionOut, B is exactly
-    // adjacent to A on the timeline, and neither is fit='free' (xfade requires
-    // matching layer dimensions, and free-fit layers are non-canvas-sized).
+    // Group into runs: A and B share a run iff both are video, A has transitionOut,
+    // B is exactly adjacent to A on the timeline, and neither is fit='free'.
+    // Image clips always render as singletons (no xfade chaining).
     const ADJ_EPS = 0.005;
-    const runs: ExportVideoClip[][] = [];
-    let cur: ExportVideoClip[] = [];
+    const runs: (ExportVideoClip | ExportImageClip)[][] = [];
+    let cur: (ExportVideoClip | ExportImageClip)[] = [];
     for (let i = 0; i < sorted.length; i++) {
       const clip = sorted[i];
       if (cur.length === 0) {
@@ -220,9 +297,15 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
         continue;
       }
       const prev = cur[cur.length - 1];
-      const prevEnd = prev.timelineStart + (prev.sourceEnd - prev.sourceStart);
+      const prevDur =
+        prev.kind === 'image'
+          ? prev.sourceEnd / Math.max(0.01, prev.speed)
+          : (prev.sourceEnd - prev.sourceStart) / Math.max(0.01, prev.speed);
+      const prevEnd = prev.timelineStart + prevDur;
       const adjacent = Math.abs(clip.timelineStart - prevEnd) < ADJ_EPS;
       const chainable =
+        prev.kind === 'video' &&
+        clip.kind === 'video' &&
         prev.transitionOut !== null &&
         prev.transitionOut.duration > 0 &&
         prev.fit !== 'free' &&
@@ -239,18 +322,27 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
 
     let runIdx = 0;
     for (const run of runs) {
-      // Build each clip's source-time chain (no tpad, no per-clip fade — xfade handles).
-      // Returns the output label and the clip's per-clip duration.
       const sourceTimeLayers: { label: string; dur: number }[] = [];
-      const audioSourceLayers: { label: string | null; dur: number; volume: number; muted: boolean }[] = [];
+      const audioSourceLayers: { label: string | null; dur: number }[] = [];
       for (let i = 0; i < run.length; i++) {
         const clip = run[i];
-        const k = perMediaSeen.get(clip.mediaId) ?? 0;
-        perMediaSeen.set(clip.mediaId, k + 1);
-        const srcLabel = vLabels.get(`${clip.mediaId}:${k}`);
-        if (!srcLabel) throw new Error(`No video label for ${clip.mediaId}:${k}`);
+        const speed = Math.max(0.01, clip.speed);
+        const rawDur =
+          clip.kind === 'image' ? clip.sourceEnd : clip.sourceEnd - clip.sourceStart;
+        const dur = rawDur / speed;
 
-        const dur = clip.sourceEnd - clip.sourceStart;
+        let srcLabel: string;
+        if (clip.kind === 'video') {
+          const k = perMediaSeen.get(clip.mediaId) ?? 0;
+          perMediaSeen.set(clip.mediaId, k + 1);
+          const found = vLabels.get(`${clip.mediaId}:${k}`);
+          if (!found) throw new Error(`No video label for ${clip.mediaId}:${k}`);
+          srcLabel = found;
+        } else {
+          const found = imageSrcLabel.get(clip.id);
+          if (!found) throw new Error(`No image label for ${clip.id}`);
+          srcLabel = found;
+        }
 
         // Geometry stage by fit.
         const geometry: string[] = [];
@@ -264,7 +356,6 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
           layerFormat = 'format=yuva420p';
           if (Math.abs(clip.transform.rotation) > 0.001) {
             const angRad = (clip.transform.rotation * Math.PI) / 180;
-            // Default ow/oh = rotw(a)/roth(a) — i.e. the bbox; let rotate compute it.
             geometry.push(`rotate=${angRad.toFixed(6)}:c=none`);
           }
         } else {
@@ -289,10 +380,24 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
           fades.push(`fade=t=out:st=${(dur - d).toFixed(4)}:d=${d.toFixed(4)}`);
         }
 
+        // Video speed: setpts=PTS/speed inside the source-time chain. Image is
+        // already shaped by `-t DUR` on its input — no setpts speed needed.
+        const speedFilter: string[] =
+          clip.kind === 'video' && Math.abs(speed - 1) > 1e-6
+            ? [`setpts=PTS/${speed.toFixed(4)}`]
+            : [];
+
         const layerLabel = `vs_${safeLabel(track.trackId)}_${runIdx}_${i}`;
+        const head =
+          clip.kind === 'video'
+            ? [
+                `[${srcLabel}]trim=${clip.sourceStart.toFixed(4)}:${clip.sourceEnd.toFixed(4)}`,
+                'setpts=PTS-STARTPTS',
+                ...speedFilter,
+              ]
+            : [`[${srcLabel}]setpts=PTS-STARTPTS`];
         const chain = [
-          `[${srcLabel}]trim=${clip.sourceStart.toFixed(4)}:${clip.sourceEnd.toFixed(4)}`,
-          'setpts=PTS-STARTPTS',
+          ...head,
           ...geometry,
           ...colorChain,
           `fps=${EXPORT_FPS}`,
@@ -302,8 +407,12 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
         filters.push(chain.join(',') + `[${layerLabel}]`);
         sourceTimeLayers.push({ label: layerLabel, dur });
 
-        // Audio source-time chain (no adelay; that happens after the run is assembled).
-        const aSrc = aLabels.get(`${clip.mediaId}:${k}`);
+        // Audio path: image clips have no audio.
+        if (clip.kind === 'image') {
+          audioSourceLayers.push({ label: null, dur });
+          continue;
+        }
+        const aSrc = aLabels.get(`${clip.mediaId}:${(perMediaSeen.get(clip.mediaId) ?? 1) - 1}`);
         if (aSrc && !clip.muted && clip.volume > 0) {
           const audLabel = `as_${safeLabel(track.trackId)}_${runIdx}_${i}`;
           const aFades: string[] = [];
@@ -312,8 +421,6 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
             aFades.push(`afade=t=out:st=${(dur - d).toFixed(4)}:d=${d.toFixed(4)}`);
           }
 
-          // Pan: linear stereo balance. p=-1 → only left, p=+1 → only right, p=0 → unchanged.
-          // Force stereo first so `c1` is always defined even for mono sources.
           const panParts: string[] = [];
           if (Math.abs(clip.pan) > 0.001) {
             const p = Math.max(-1, Math.min(1, clip.pan));
@@ -323,8 +430,6 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
             panParts.push(`pan=stereo|c0=${L}*c0|c1=${R}*c1`);
           }
 
-          // Duck: step-function attenuation while the source clip is on the timeline.
-          // We express this in clip-local time (source-time chain runs t=0..dur).
           const duckParts: string[] = [];
           if (clip.duckSourceClipId && clip.duckAmount > 0) {
             const src = clipRange.get(clip.duckSourceClipId);
@@ -340,27 +445,37 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
             }
           }
 
+          // Speed for audio: atempo chain (cascaded for values outside 0.5..2).
+          const tempo = atempoChain(speed);
+
           const aChain = [
             `[${aSrc}]atrim=${clip.sourceStart.toFixed(4)}:${clip.sourceEnd.toFixed(4)}`,
             'asetpts=PTS-STARTPTS',
             `volume=${clip.volume.toFixed(3)}`,
             ...panParts,
             ...duckParts,
+            ...tempo,
             ...aFades,
           ];
           filters.push(aChain.join(',') + `[${audLabel}]`);
-          audioSourceLayers.push({ label: audLabel, dur, volume: clip.volume, muted: clip.muted });
+          audioSourceLayers.push({ label: audLabel, dur });
         } else {
-          audioSourceLayers.push({ label: null, dur, volume: clip.volume, muted: clip.muted });
+          audioSourceLayers.push({ label: null, dur });
         }
       }
 
       // Cascade xfade for video. For run.length === 1 the source layer is the run output.
+      // Note: image clips never appear in chained runs (gated above), so accessing
+      // `prev.transitionOut` is safe — runs of length > 1 are all video.
       let runVideoLabel = sourceTimeLayers[0].label;
       let runDur = sourceTimeLayers[0].dur;
       for (let i = 1; i < run.length; i++) {
         const prev = run[i - 1];
-        const D = Math.min(prev.transitionOut!.duration, run[i - 1].sourceEnd - run[i - 1].sourceStart, run[i].sourceEnd - run[i].sourceStart);
+        const D = Math.min(
+          prev.transitionOut!.duration,
+          sourceTimeLayers[i - 1].dur,
+          sourceTimeLayers[i].dur
+        );
         const offset = runDur - D;
         const next = sourceTimeLayers[i];
         const out = `vx_${safeLabel(track.trackId)}_${runIdx}_${i}`;
@@ -389,35 +504,34 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
         transform: run[0].transform,
       });
 
-      // Cascade audio: acrossfade for runs, plain concat-via-acrossfade for any pair
-      // with a transitionOut (audio always crossfades smoothly during a visual transition).
-      // Filter out null (muted/silent) entries — pair them with anullsrc of equal duration
-      // so cascading still works. Simpler approach: if any clip in the run has null audio,
-      // synthesize a silent stream of that length first.
-      const filledAudio = audioSourceLayers.map((a, i) => {
-        if (a.label) return a;
-        // Synthesize silence for the same duration so the run audio cascade stays aligned.
-        const silentLabel = `asil_${safeLabel(track.trackId)}_${runIdx}_${i}`;
-        filters.push(`anullsrc=r=48000:cl=stereo:d=${a.dur.toFixed(4)}[${silentLabel}]`);
-        return { ...a, label: silentLabel };
-      });
-
-      let runAudioLabel: string | null = filledAudio[0].label;
-      let runAudioDur = filledAudio[0].dur;
-      for (let i = 1; i < run.length; i++) {
-        const prev = run[i - 1];
-        const D = Math.min(prev.transitionOut!.duration, runAudioDur, filledAudio[i].dur);
-        const out = `ax_${safeLabel(track.trackId)}_${runIdx}_${i}`;
-        filters.push(
-          `[${runAudioLabel}][${filledAudio[i].label}]acrossfade=duration=${D.toFixed(4)}:curve1=tri:curve2=tri[${out}]`
-        );
-        runAudioLabel = out;
-        runAudioDur = runAudioDur + filledAudio[i].dur - D;
-      }
-
-      // Skip emitting audio if all clips were muted and we synthesized only silence.
+      // Audio cascade. If the entire run has no real audio (every clip muted or
+      // zero-volume), skip both the silence synthesis and the cascade — the master
+      // anullsrc base stream covers absence, and emitting dangling acrossfade
+      // labels here can confuse FFmpeg's filter graph validator.
       const anyRealAudio = audioSourceLayers.some((a) => a.label !== null);
-      if (anyRealAudio && runAudioLabel) {
+      if (anyRealAudio) {
+        // Synthesize silence only for the muted/zero clips inside an otherwise
+        // audible run — needed to keep the acrossfade cascade aligned.
+        const filledAudio = audioSourceLayers.map((a, i) => {
+          if (a.label) return a;
+          const silentLabel = `asil_${safeLabel(track.trackId)}_${runIdx}_${i}`;
+          filters.push(`anullsrc=r=48000:cl=stereo:d=${a.dur.toFixed(4)}[${silentLabel}]`);
+          return { ...a, label: silentLabel };
+        });
+
+        let runAudioLabel: string = filledAudio[0].label!;
+        let runAudioDur = filledAudio[0].dur;
+        for (let i = 1; i < run.length; i++) {
+          const prev = run[i - 1];
+          const D = Math.min(prev.transitionOut!.duration, runAudioDur, filledAudio[i].dur);
+          const out = `ax_${safeLabel(track.trackId)}_${runIdx}_${i}`;
+          filters.push(
+            `[${runAudioLabel}][${filledAudio[i].label}]acrossfade=duration=${D.toFixed(4)}:curve1=tri:curve2=tri[${out}]`
+          );
+          runAudioLabel = out;
+          runAudioDur = runAudioDur + filledAudio[i].dur - D;
+        }
+
         const finalAudio = `ar_${safeLabel(track.trackId)}_${runIdx}`;
         if (runTlStart > 0) {
           const delayMs = Math.round(runTlStart * 1000);
@@ -468,11 +582,13 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
       const escaped = escapeDrawtext(t.text);
       const xN = t.transform.x;
       const yN = t.transform.y;
-      const textEnd = t.timelineStart + (t.sourceEnd - t.sourceStart);
+      const textDur = (t.sourceEnd - t.sourceStart) / Math.max(0.01, t.speed);
+      const textEnd = t.timelineStart + textDur;
       const enable = `between(t,${t.timelineStart.toFixed(4)},${textEnd.toFixed(4)})`;
+      const fontfile = fontFileForFamily(t.fontFamily);
 
       const drawtext =
-        `drawtext=fontfile=text.ttf:text='${escaped}':fontcolor=${hexToFFmpegColor(t.color)}:` +
+        `drawtext=fontfile=${fontfile}:text='${escaped}':fontcolor=${hexToFFmpegColor(t.color)}:` +
         `fontsize=${fontSizePx}:` +
         `x=(W*${xN.toFixed(4)})-text_w/2:y=(H*${yN.toFixed(4)})-text_h/2:` +
         `borderw=2:bordercolor=black@0.6`;

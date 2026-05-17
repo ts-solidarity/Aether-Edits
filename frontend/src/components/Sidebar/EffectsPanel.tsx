@@ -1,6 +1,8 @@
 import { useProject } from '../../state/ProjectContext';
 import type { TransitionKind } from '../../types/project';
 
+export const FX_DRAG_MIME = 'application/x-aether-fx';
+
 const KINDS: { kind: TransitionKind; label: string }[] = [
   { kind: 'fade', label: 'Fade' },
   { kind: 'fadeblack', label: 'Fade · Black' },
@@ -74,10 +76,19 @@ export function EffectsPanel() {
           return (
             <button
               key={kind}
-              className={`fx-card ${active ? 'active' : ''} ${!selected ? 'disabled' : ''}`}
+              className={`fx-card ${active ? 'active' : ''}`}
               onClick={() => apply(kind)}
-              disabled={!selected}
-              title={selected ? `Apply ${label}` : 'Select a clip first'}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.effectAllowed = 'copy';
+                e.dataTransfer.setData(FX_DRAG_MIME, kind);
+                e.dataTransfer.setData('text/plain', kind);
+                window.dispatchEvent(new CustomEvent('aether-fx-drag-start', { detail: kind }));
+              }}
+              onDragEnd={() => {
+                window.dispatchEvent(new CustomEvent('aether-fx-drag-end'));
+              }}
+              title={`Drag ${label} onto a clip — or click while a clip is selected`}
             >
               <div className="fx-thumb" data-kind={kind} />
               <div className="fx-card-name">{label}</div>

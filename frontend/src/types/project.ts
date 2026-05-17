@@ -1,5 +1,7 @@
 export type MediaStatus = 'ready' | 'hydrating' | 'missing';
 
+export type MediaKind = 'video' | 'image';
+
 export interface MediaFile {
   id: string;
   name: string;
@@ -10,13 +12,14 @@ export interface MediaFile {
   height: number;
   status: MediaStatus;
   hasAudio: boolean;
+  kind: MediaKind;
 }
 
 /** Center-anchored normalized transform applied to any clip. */
 export interface Transform {
   x: number;        // 0..1, 0.5 = canvas horizontal center
   y: number;        // 0..1, 0.5 = canvas vertical center
-  scale: number;    // 1 = clip's default size; for video, 1 = letterbox-fit; for text, multiplies fontSize-derived px
+  scale: number;    // 1 = clip's default size; for video/image, 1 = letterbox-fit; for text, multiplies fontSize-derived px
   rotation: number; // degrees, positive = clockwise
 }
 
@@ -59,6 +62,21 @@ export const NEUTRAL_COLOR: ColorAdjust = { brightness: 0, contrast: 1, saturati
 
 export type VideoFit = 'contain' | 'cover' | 'free';
 
+/** Curated, bundled text font family keys. Each maps to a TTF in
+ *  `public/fonts/<key>.ttf` for export and a CSS @font-face for preview. */
+export type FontFamilyKey = 'sans' | 'serif' | 'mono' | 'display' | 'handwriting';
+
+export const FONT_FAMILIES: { key: FontFamilyKey; label: string; cssStack: string }[] = [
+  { key: 'sans',         label: 'Sans',         cssStack: "'Aether Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" },
+  { key: 'serif',        label: 'Serif',        cssStack: "'Aether Serif', Georgia, 'Times New Roman', serif" },
+  { key: 'mono',         label: 'Mono',         cssStack: "'Aether Mono', 'JetBrains Mono', 'Fira Code', monospace" },
+  { key: 'display',      label: 'Display',      cssStack: "'Aether Display', Impact, 'Arial Black', sans-serif" },
+  { key: 'handwriting',  label: 'Handwriting',  cssStack: "'Aether Handwriting', 'Comic Sans MS', cursive" },
+];
+
+export const MIN_SPEED = 0.25;
+export const MAX_SPEED = 4;
+
 export interface VideoClip {
   id: string;
   kind: 'video';
@@ -75,6 +93,22 @@ export interface VideoClip {
   fit: VideoFit;
   transform: Transform;
   color: ColorAdjust | null;
+  speed: number; // 0.25..4, default 1
+  transitionOut: TransitionOut | null;
+}
+
+export interface ImageClip {
+  id: string;
+  kind: 'image';
+  mediaFileId: string;
+  sourceStart: number; // always 0 for images
+  sourceEnd: number;   // display duration on the timeline (pre-speed)
+  timelineStart: number;
+  trackId: string;
+  fit: VideoFit; // default 'free' so resize-on-canvas is the natural interaction
+  transform: Transform;
+  color: ColorAdjust | null;
+  speed: number; // accepted for type uniformity; export ignores (image is static)
   transitionOut: TransitionOut | null;
 }
 
@@ -90,15 +124,20 @@ export interface TextClip {
   text: string;
   color: string;
   fontSize: number; // % of canvas height, e.g. 8 = 8% of H
+  fontFamily: FontFamilyKey;
   transform: Transform;
+  speed: number; // accepted for type uniformity; text length is unaffected
   transitionOut: TransitionOut | null;
 }
 
-export type Clip = VideoClip | TextClip;
+export type Clip = VideoClip | TextClip | ImageClip;
 
-/** Duration on the timeline, in seconds. */
+/** Canonical timeline duration including speed. Every consumer should use this
+ *  rather than (sourceEnd - sourceStart) directly. */
 export function clipDuration(clip: Clip): number {
-  return clip.sourceEnd - clip.sourceStart;
+  const raw = clip.sourceEnd - clip.sourceStart;
+  const speed = (clip as { speed?: number }).speed ?? 1;
+  return raw / Math.max(MIN_SPEED, speed);
 }
 
 export interface Track {

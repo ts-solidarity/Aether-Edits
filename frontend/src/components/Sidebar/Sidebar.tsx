@@ -21,14 +21,12 @@ export function Sidebar() {
   const handleFiles = useCallback(
     (files: FileList) => {
       Array.from(files).forEach((file) => {
-        if (!file.type.startsWith('video/')) return;
+        const isVideo = file.type.startsWith('video/');
+        const isImage = file.type.startsWith('image/');
+        if (!isVideo && !isImage) return;
         const id = newId('media');
 
         setLoadingFiles((prev) => new Set(prev).add(id));
-
-        const probeUrl = URL.createObjectURL(file);
-        const video = document.createElement('video');
-        video.preload = 'metadata';
 
         const finishLoading = () => {
           setLoadingFiles((prev) => {
@@ -38,7 +36,12 @@ export function Sidebar() {
           });
         };
 
-        const finalizeMeta = async (duration: number) => {
+        const finalizeMeta = async (
+          duration: number,
+          width: number,
+          height: number,
+          kind: 'video' | 'image'
+        ) => {
           const objectUrl = getOrCreateObjectUrl(id, file);
           const mediaFile: MediaFile = {
             id,
@@ -46,13 +49,13 @@ export function Sidebar() {
             objectUrl,
             file,
             duration,
-            width: video.videoWidth,
-            height: video.videoHeight,
+            width,
+            height,
             status: 'ready',
-            hasAudio: true,
+            hasAudio: kind === 'video',
+            kind,
           };
           dispatch({ type: 'ADD_MEDIA_FILE', payload: mediaFile });
-          URL.revokeObjectURL(probeUrl);
           try {
             await saveFile(id, file);
           } catch (err) {
@@ -62,11 +65,35 @@ export function Sidebar() {
           finishLoading();
         };
 
+        if (isImage) {
+          const probeUrl = URL.createObjectURL(file);
+          const img = new Image();
+          img.onload = () => {
+            void finalizeMeta(4, img.naturalWidth, img.naturalHeight, 'image');
+            URL.revokeObjectURL(probeUrl);
+          };
+          img.onerror = () => {
+            URL.revokeObjectURL(probeUrl);
+            finishLoading();
+          };
+          img.src = probeUrl;
+          return;
+        }
+
+        const probeUrl = URL.createObjectURL(file);
+        const video = document.createElement('video');
+        video.preload = 'metadata';
+
+        const finalizeVideo = (duration: number) => {
+          void finalizeMeta(duration, video.videoWidth, video.videoHeight, 'video');
+          URL.revokeObjectURL(probeUrl);
+        };
+
         video.onloadedmetadata = () => {
           const reported = video.duration;
           const looksBad = !Number.isFinite(reported) || reported <= 0;
           if (!looksBad) {
-            void finalizeMeta(reported);
+            finalizeVideo(reported);
             return;
           }
 
@@ -74,14 +101,14 @@ export function Sidebar() {
             video.removeEventListener('timeupdate', onTimeUpdate);
             const real = video.duration;
             video.currentTime = 0;
-            void finalizeMeta(Number.isFinite(real) && real > 0 ? real : 0);
+            finalizeVideo(Number.isFinite(real) && real > 0 ? real : 0);
           };
           video.addEventListener('timeupdate', onTimeUpdate);
           try {
             video.currentTime = Number.MAX_SAFE_INTEGER;
           } catch {
             video.removeEventListener('timeupdate', onTimeUpdate);
-            void finalizeMeta(Number.isFinite(reported) && reported > 0 ? reported : 0);
+            finalizeVideo(Number.isFinite(reported) && reported > 0 ? reported : 0);
           }
         };
         video.onerror = () => {
@@ -135,7 +162,9 @@ export function Sidebar() {
       text: 'Your text',
       color: '#ffffff',
       fontSize: 8,
+      fontFamily: 'sans',
       transform: { ...DEFAULT_TRANSFORM },
+      speed: 1,
       transitionOut: null,
     };
     dispatch({ type: 'ADD_CLIP', payload: { clip, trackId } });
@@ -187,13 +216,13 @@ export function Sidebar() {
                 onClick={() => fileInputRef.current?.click()}
               >
                 <div className="drop-zone-icon">⬆</div>
-                <div className="drop-zone-text">Drop files here</div>
+                <div className="drop-zone-text">Drop video or image files</div>
                 <div className="drop-zone-hint">or click to browse</div>
               </div>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="video/*"
+                accept="video/*,image/*"
                 multiple
                 style={{ display: 'none' }}
                 onChange={(e) => e.target.files && handleFiles(e.target.files)}

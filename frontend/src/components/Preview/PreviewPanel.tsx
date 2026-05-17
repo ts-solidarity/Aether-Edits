@@ -1,6 +1,7 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useProject } from '../../state/ProjectContext';
-import type { Clip, ProjectState, TextClip, Transform, VideoClip } from '../../types/project';
+import type { Clip, ImageClip, ProjectState, TextClip, Transform, VideoClip } from '../../types/project';
+import { FONT_FAMILIES, clipDuration } from '../../types/project';
 import { CanvasOverlay, type PendingTransform } from './CanvasOverlay';
 
 const CANVAS_W = 854;
@@ -17,7 +18,7 @@ function formatTime(seconds: number): string {
 function getTimelineDuration(clips: Record<string, Clip>): number {
   let max = 0;
   for (const clip of Object.values(clips)) {
-    const end = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
+    const end = clip.timelineStart + clipDuration(clip);
     if (end > max) max = end;
   }
   return max;
@@ -32,7 +33,7 @@ function findActiveClipsAtTime(state: ProjectState, time: number): Clip[] {
     for (const clipId of track.clips) {
       const clip = state.clips[clipId];
       if (!clip) continue;
-      const end = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
+      const end = clip.timelineStart + clipDuration(clip);
       if (time >= clip.timelineStart && time < end) out.push(clip);
     }
   }
@@ -55,7 +56,7 @@ function prevClipOnTrack(state: ProjectState, clip: Clip): Clip | null {
  *  fade-out (from own transitionOut). Matches FFmpeg: fades live in the last/first D/2 of clip. */
 function computeClipAlpha(state: ProjectState, clip: Clip, t: number): number {
   let alpha = 1;
-  const dur = clip.sourceEnd - clip.sourceStart;
+  const dur = clipDuration(clip);
   const tlEnd = clip.timelineStart + dur;
 
   if (clip.transitionOut && clip.transitionOut.duration > 0) {
@@ -69,7 +70,7 @@ function computeClipAlpha(state: ProjectState, clip: Clip, t: number): number {
 
   const prev = prevClipOnTrack(state, clip);
   if (prev && prev.transitionOut && prev.transitionOut.duration > 0) {
-    const prevEnd = prev.timelineStart + (prev.sourceEnd - prev.sourceStart);
+    const prevEnd = prev.timelineStart + clipDuration(prev);
     if (Math.abs(prevEnd - clip.timelineStart) < ADJACENCY_EPS) {
       const D = Math.min(prev.transitionOut.duration, dur);
       const halfD = D / 2;
@@ -153,10 +154,13 @@ function drawTextClip(
   const fontSizePx = Math.round((clip.fontSize / 100) * h * t.scale);
   if (fontSizePx < 1) return;
 
+  const family = FONT_FAMILIES.find((f) => f.key === clip.fontFamily)?.cssStack ??
+    "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+
   ctx.save();
   ctx.translate(t.x * w, t.y * h);
   if (t.rotation !== 0) ctx.rotate((t.rotation * Math.PI) / 180);
-  ctx.font = `700 ${fontSizePx}px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
+  ctx.font = `700 ${fontSizePx}px ${family}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineWidth = Math.max(2, Math.round(fontSizePx / 24));
@@ -167,10 +171,61 @@ function drawTextClip(
   ctx.restore();
 }
 
+/** Draw an image clip — same fit/transform model as drawVideoClip, but the
+ *  source is an HTMLImageElement. */
+function drawImageClip(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  clip: ImageClip,
+  w: number,
+  h: number,
+  transformOverride?: Transform
+): void {
+  const iw = img.naturalWidth;
+  const ih = img.naturalHeight;
+  if (!iw || !ih || !img.complete) return;
+
+  const filter = clip.color
+    ? `brightness(${(1 + clip.color.brightness).toFixed(3)}) contrast(${clip.color.contrast.toFixed(3)}) saturate(${clip.color.saturation.toFixed(3)}) hue-rotate(${clip.color.hue.toFixed(1)}deg)`
+    : 'none';
+  const restoreFilter = filter !== 'none';
+  if (restoreFilter) ctx.filter = filter;
+
+  if (clip.fit === 'cover') {
+    const k = Math.max(w / iw, h / ih);
+    const dw = iw * k;
+    const dh = ih * k;
+    ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  } else if (clip.fit === 'free') {
+    const t = transformOverride ?? clip.transform;
+    const baseK = Math.min(w / iw, h / ih);
+    const k = baseK * t.scale;
+    const dw = iw * k;
+    const dh = ih * k;
+    ctx.save();
+    ctx.translate(t.x * w, t.y * h);
+    if (t.rotation !== 0) ctx.rotate((t.rotation * Math.PI) / 180);
+    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
+  } else {
+    const scale = Math.min(w / iw, h / ih);
+    const dw = Math.round(iw * scale);
+    const dh = Math.round(ih * scale);
+    const dx = Math.floor((w - dw) / 2);
+    const dy = Math.floor((h - dh) / 2);
+    ctx.drawImage(img, dx, dy, dw, dh);
+  }
+
+  if (restoreFilter) ctx.filter = 'none';
+}
+
 export function PreviewPanel() {
   const { state, dispatch } = useProject();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
+  // Image refs are keyed by mediaFileId because the same image media can back
+  // multiple clips. Decoding once and reusing across clips saves memory.
+  const imageRefs = useRef<Map<string, HTMLImageElement>>(new Map());
   const primedClipsRef = useRef<Set<string>>(new Set());
   const playingClipsRef = useRef<Set<string>>(new Set());
   const rafRef = useRef<number>(0);
@@ -218,6 +273,28 @@ export function PreviewPanel() {
     }
   }, [state.clips]);
 
+  // Image pool — one HTMLImageElement per image media. Cleared when no clip
+  // references the media anymore.
+  useEffect(() => {
+    const current = imageRefs.current;
+    const aliveMediaIds = new Set<string>();
+    for (const c of Object.values(state.clips)) {
+      if (c.kind === 'image') aliveMediaIds.add(c.mediaFileId);
+    }
+    for (const mediaId of Array.from(current.keys())) {
+      if (!aliveMediaIds.has(mediaId)) current.delete(mediaId);
+    }
+    for (const mediaId of aliveMediaIds) {
+      if (current.has(mediaId)) continue;
+      const media = state.mediaFiles[mediaId];
+      if (!media?.objectUrl) continue;
+      const img = new Image();
+      img.onload = () => setVideoLoadTick((n) => n + 1);
+      img.src = media.objectUrl;
+      current.set(mediaId, img);
+    }
+  }, [state.clips, state.mediaFiles]);
+
   useEffect(() => {
     for (const [clipId, v] of videoRefs.current) {
       const clip = state.clips[clipId];
@@ -231,7 +308,7 @@ export function PreviewPanel() {
         continue;
       }
       const clipStart = clip.timelineStart;
-      const clipEnd = clipStart + (clip.sourceEnd - clip.sourceStart);
+      const clipEnd = clipStart + clipDuration(clip);
       const inWindow =
         clipEnd >= state.playheadPosition - ACTIVE_WINDOW_SECONDS &&
         clipStart <= state.playheadPosition + ACTIVE_WINDOW_SECONDS;
@@ -278,7 +355,8 @@ export function PreviewPanel() {
         if (clip.kind !== 'video') continue;
         const v = videoRefs.current.get(clip.id);
         if (!v || !v.src) continue;
-        const src = clip.sourceStart + (state.playheadPosition - clip.timelineStart);
+        const speed = Math.max(0.25, Math.min(4, clip.speed));
+        const src = clip.sourceStart + (state.playheadPosition - clip.timelineStart) * speed;
         if (v.readyState < 1) {
           await new Promise<void>((resolve) => {
             const handler = () => resolve();
@@ -317,6 +395,9 @@ export function PreviewPanel() {
         if (clip.kind === 'video') {
           const v = videoRefs.current.get(clip.id);
           if (v && v.readyState >= 2) drawVideoClip(ctx, v, clip, canvas.width, canvas.height, override);
+        } else if (clip.kind === 'image') {
+          const img = imageRefs.current.get(clip.mediaFileId);
+          if (img) drawImageClip(ctx, img, clip, canvas.width, canvas.height, override);
         } else {
           drawTextClip(ctx, clip as TextClip, canvas.width, canvas.height, override);
         }
@@ -382,12 +463,15 @@ export function PreviewPanel() {
           const v = videoRefs.current.get(clip.id);
           if (!v || !v.src) continue;
           const videoClip = clip as VideoClip;
-          const expectedSrc = videoClip.sourceStart + (t - videoClip.timelineStart);
+          const speed = Math.max(0.25, Math.min(4, videoClip.speed));
+          // Source-time advances at `speed` × timeline rate.
+          const expectedSrc = videoClip.sourceStart + (t - videoClip.timelineStart) * speed;
 
           if (!playingClipsRef.current.has(clip.id)) {
             if (v.readyState >= 1) v.currentTime = expectedSrc;
             v.muted = videoClip.muted;
             v.volume = videoClip.volume * alpha;
+            v.playbackRate = speed;
             v.play().catch(() => {
               v.muted = true;
               v.play().catch(() => {});
@@ -397,12 +481,20 @@ export function PreviewPanel() {
             if (Math.abs(v.currentTime - expectedSrc) > 0.3) v.currentTime = expectedSrc;
             v.muted = videoClip.muted;
             v.volume = Math.max(0, Math.min(1, videoClip.volume * alpha));
+            if (Math.abs(v.playbackRate - speed) > 0.01) v.playbackRate = speed;
           }
 
           if (v.readyState >= 2) {
             ctx.globalAlpha = alpha;
             const override = pt && pt.clipId === clip.id ? pt.transform : undefined;
             drawVideoClip(ctx, v, videoClip, canvas.width, canvas.height, override);
+          }
+        } else if (clip.kind === 'image') {
+          const img = imageRefs.current.get(clip.mediaFileId);
+          if (img) {
+            ctx.globalAlpha = alpha;
+            const override = pt && pt.clipId === clip.id ? pt.transform : undefined;
+            drawImageClip(ctx, img, clip, canvas.width, canvas.height, override);
           }
         } else {
           ctx.globalAlpha = alpha;

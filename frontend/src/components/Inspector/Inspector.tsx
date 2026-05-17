@@ -1,8 +1,20 @@
 import { useProject } from '../../state/ProjectContext';
-import type { Clip, ColorAdjust, TextClip, TransitionKind, VideoClip, VideoFit } from '../../types/project';
-import { DEFAULT_TRANSFORM, NEUTRAL_COLOR } from '../../types/project';
-
-const DEFAULT_TRANSITION_DURATION = 1;
+import type {
+  Clip,
+  ColorAdjust,
+  FontFamilyKey,
+  ImageClip,
+  TextClip,
+  VideoClip,
+  VideoFit,
+} from '../../types/project';
+import {
+  DEFAULT_TRANSFORM,
+  FONT_FAMILIES,
+  MAX_SPEED,
+  MIN_SPEED,
+  NEUTRAL_COLOR,
+} from '../../types/project';
 
 export function Inspector() {
   const { state, dispatch } = useProject();
@@ -19,25 +31,65 @@ export function Inspector() {
   const clip = state.clips[state.selectedClipIds[0]];
   if (!clip) return null;
 
+  const kindLabel =
+    clip.kind === 'video' ? '🎬 Video clip' :
+    clip.kind === 'image' ? '🖼 Image clip' :
+    '🅣 Text clip';
+
   return (
     <div>
       <div className="sidebar-section-title">Inspector</div>
       <div className="inspector">
         <div className="inspector-header">
-          <span className="inspector-kind">{clip.kind === 'video' ? '🎬 Video clip' : '🅣 Text clip'}</span>
+          <span className="inspector-kind">{kindLabel}</span>
         </div>
-        {clip.kind === 'video' ? (
-          <VideoClipFields clip={clip} dispatch={dispatch} />
-        ) : (
-          <TextClipFields clip={clip} dispatch={dispatch} />
-        )}
-        {(clip.kind === 'text' || (clip.kind === 'video' && clip.fit === 'free')) && (
+
+        {clip.kind === 'video' && <VideoClipFields clip={clip} dispatch={dispatch} />}
+        {clip.kind === 'image' && <ImageClipFields clip={clip} dispatch={dispatch} />}
+        {clip.kind === 'text' && <TextClipFields clip={clip} dispatch={dispatch} />}
+
+        {(clip.kind === 'text' ||
+          ((clip.kind === 'video' || clip.kind === 'image') && clip.fit === 'free')) && (
           <TransformFields clip={clip} dispatch={dispatch} />
         )}
-        {clip.kind === 'video' && (
+
+        {(clip.kind === 'video' || clip.kind === 'image') && (
           <ColorFields clip={clip} dispatch={dispatch} />
         )}
-        <TransitionFields clip={clip} dispatch={dispatch} />
+
+        <SpeedField clip={clip} dispatch={dispatch} />
+      </div>
+    </div>
+  );
+}
+
+function FitChips({
+  clip,
+  dispatch,
+}: {
+  clip: VideoClip | ImageClip;
+  dispatch: React.Dispatch<import('../../state/actions').Action>;
+}) {
+  const fits: VideoFit[] = ['contain', 'cover', 'free'];
+  return (
+    <div className="inspector-field inspector-field-stack">
+      <span>Fit</span>
+      <div style={{ display: 'flex', gap: 4 }}>
+        {fits.map((f) => (
+          <button
+            key={f}
+            type="button"
+            className={`inspector-chip ${clip.fit === f ? 'active' : ''}`}
+            onClick={() =>
+              dispatch({
+                type: 'SET_CLIP_FIT',
+                payload: { clipId: clip.id, fit: f },
+              })
+            }
+          >
+            {f}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -51,8 +103,6 @@ function VideoClipFields({
   dispatch: React.Dispatch<import('../../state/actions').Action>;
 }) {
   const { state } = useProject();
-  const fits: VideoFit[] = ['contain', 'cover', 'free'];
-  // Other video clips that could serve as a duck source.
   const duckSources = Object.values(state.clips)
     .filter((c): c is VideoClip => c.kind === 'video' && c.id !== clip.id)
     .sort((a, b) => a.timelineStart - b.timelineStart);
@@ -104,29 +154,14 @@ function VideoClipFields({
           }
         />
         <span className="inspector-value">
-          {clip.pan === 0 ? 'C' : clip.pan < 0 ? `L${Math.round(-clip.pan * 100)}` : `R${Math.round(clip.pan * 100)}`}
+          {clip.pan === 0
+            ? 'C'
+            : clip.pan < 0
+              ? `L${Math.round(-clip.pan * 100)}`
+              : `R${Math.round(clip.pan * 100)}`}
         </span>
       </label>
-      <div className="inspector-field inspector-field-stack">
-        <span>Fit</span>
-        <div style={{ display: 'flex', gap: 4 }}>
-          {fits.map((f) => (
-            <button
-              key={f}
-              type="button"
-              className={`inspector-chip ${clip.fit === f ? 'active' : ''}`}
-              onClick={() =>
-                dispatch({
-                  type: 'SET_CLIP_FIT',
-                  payload: { clipId: clip.id, fit: f },
-                })
-              }
-            >
-              {f}
-            </button>
-          ))}
-        </div>
-      </div>
+      <FitChips clip={clip} dispatch={dispatch} />
       <div className="inspector-field-group-header">
         <span>Duck under</span>
       </div>
@@ -184,6 +219,23 @@ function VideoClipFields({
   );
 }
 
+function ImageClipFields({
+  clip,
+  dispatch,
+}: {
+  clip: ImageClip;
+  dispatch: React.Dispatch<import('../../state/actions').Action>;
+}) {
+  return (
+    <>
+      <FitChips clip={clip} dispatch={dispatch} />
+      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+        Drag corners of the box in the preview to resize. Drag the centre to move.
+      </div>
+    </>
+  );
+}
+
 function TextClipFields({
   clip,
   dispatch,
@@ -220,6 +272,29 @@ function TextClipFields({
         />
       </label>
       <label className="inspector-field">
+        <span>Font</span>
+        <select
+          value={clip.fontFamily}
+          onChange={(e) =>
+            dispatch({
+              type: 'UPDATE_TEXT_CLIP',
+              payload: { clipId: clip.id, fontFamily: e.target.value as FontFamilyKey },
+            })
+          }
+          style={{ fontFamily: FONT_FAMILIES.find((f) => f.key === clip.fontFamily)?.cssStack }}
+        >
+          {FONT_FAMILIES.map((f) => (
+            <option
+              key={f.key}
+              value={f.key}
+              style={{ fontFamily: f.cssStack }}
+            >
+              {f.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="inspector-field">
         <span>Size</span>
         <input
           type="range"
@@ -235,6 +310,41 @@ function TextClipFields({
           }
         />
         <span className="inspector-value">{clip.fontSize.toFixed(1)}%</span>
+      </label>
+    </>
+  );
+}
+
+function SpeedField({
+  clip,
+  dispatch,
+}: {
+  clip: Clip;
+  dispatch: React.Dispatch<import('../../state/actions').Action>;
+}) {
+  // Speed is a no-op for text and image but harmless to expose; users can
+  // shrink/expand timeline duration of text and images via speed as a quick lever.
+  return (
+    <>
+      <div className="inspector-field-group-header">
+        <span>Speed</span>
+      </div>
+      <label className="inspector-field">
+        <span>×</span>
+        <input
+          type="range"
+          min={MIN_SPEED}
+          max={MAX_SPEED}
+          step={0.05}
+          value={clip.speed}
+          onChange={(e) =>
+            dispatch({
+              type: 'SET_CLIP_SPEED',
+              payload: { clipId: clip.id, speed: Number(e.target.value) },
+            })
+          }
+        />
+        <span className="inspector-value">{clip.speed.toFixed(2)}×</span>
       </label>
     </>
   );
@@ -338,7 +448,7 @@ function ColorFields({
   clip,
   dispatch,
 }: {
-  clip: VideoClip;
+  clip: VideoClip | ImageClip;
   dispatch: React.Dispatch<import('../../state/actions').Action>;
 }) {
   const enabled = !!clip.color;
@@ -365,7 +475,12 @@ function ColorFields({
           <button
             type="button"
             className="inspector-link-btn"
-            onClick={() => dispatch({ type: 'SET_CLIP_COLOR', payload: { clipId: clip.id, color: { ...NEUTRAL_COLOR } } })}
+            onClick={() =>
+              dispatch({
+                type: 'SET_CLIP_COLOR',
+                payload: { clipId: clip.id, color: { ...NEUTRAL_COLOR } },
+              })
+            }
           >
             Reset
           </button>
@@ -435,89 +550,3 @@ function ColorFields({
   );
 }
 
-const TRANSITION_KINDS: TransitionKind[] = [
-  'fade', 'fadeblack', 'fadewhite', 'dissolve',
-  'wipeleft', 'wiperight', 'wipeup', 'wipedown',
-  'slideleft', 'slideright', 'slideup', 'slidedown',
-  'circleopen', 'circleclose', 'pixelize', 'radial',
-];
-
-function TransitionFields({
-  clip,
-  dispatch,
-}: {
-  clip: Clip;
-  dispatch: React.Dispatch<import('../../state/actions').Action>;
-}) {
-  const hasTransition = !!clip.transitionOut;
-  return (
-    <>
-      <label className="inspector-field">
-        <span>Transition out</span>
-        <input
-          type="checkbox"
-          checked={hasTransition}
-          onChange={(e) =>
-            dispatch({
-              type: 'SET_CLIP_TRANSITION',
-              payload: {
-                clipId: clip.id,
-                transition: e.target.checked
-                  ? { kind: 'fade', duration: DEFAULT_TRANSITION_DURATION }
-                  : null,
-              },
-            })
-          }
-        />
-      </label>
-      {hasTransition && clip.transitionOut && (
-        <>
-          <label className="inspector-field">
-            <span>Kind</span>
-            <select
-              value={clip.transitionOut.kind}
-              onChange={(e) =>
-                dispatch({
-                  type: 'SET_CLIP_TRANSITION',
-                  payload: {
-                    clipId: clip.id,
-                    transition: { ...clip.transitionOut!, kind: e.target.value as TransitionKind },
-                  },
-                })
-              }
-            >
-              {TRANSITION_KINDS.map((k) => (
-                <option key={k} value={k}>
-                  {k}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="inspector-field">
-            <span>Duration</span>
-            <input
-              type="range"
-              min={0.1}
-              max={3}
-              step={0.1}
-              value={clip.transitionOut.duration}
-              onChange={(e) =>
-                dispatch({
-                  type: 'SET_CLIP_TRANSITION',
-                  payload: {
-                    clipId: clip.id,
-                    transition: { ...clip.transitionOut!, duration: Number(e.target.value) },
-                  },
-                })
-              }
-            />
-            <span className="inspector-value">{clip.transitionOut.duration.toFixed(1)}s</span>
-          </label>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', padding: '2px 0' }}>
-            Preview shows fade; export uses the selected kind.
-          </div>
-        </>
-      )}
-    </>
-  );
-}

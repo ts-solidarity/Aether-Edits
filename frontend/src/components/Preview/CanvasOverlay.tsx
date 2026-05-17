@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
-import type { Clip, MediaFile, TextClip, Transform, VideoClip } from '../../types/project';
+import type { Clip, ImageClip, MediaFile, TextClip, Transform, VideoClip } from '../../types/project';
 import type { Action } from '../../state/actions';
 
 export interface PendingTransform {
@@ -186,8 +186,8 @@ export function CanvasOverlay({
     >
       {displaySize.w > 0 &&
         activeClips.map((clip) => {
-          // Text clips are always interactive; video clips only when fit === 'free'.
-          if (clip.kind === 'video' && clip.fit !== 'free') return null;
+          // Text clips are always interactive; video/image clips only when fit === 'free'.
+          if ((clip.kind === 'video' || clip.kind === 'image') && clip.fit !== 'free') return null;
           const t =
             pendingTransform && pendingTransform.clipId === clip.id
               ? pendingTransform.transform
@@ -196,7 +196,7 @@ export function CanvasOverlay({
           const box =
             clip.kind === 'text'
               ? measureTextBox(clip, t, canvasH, displaySize.h)
-              : measureVideoBox(clip, t, mediaFiles, canvasW, canvasH, displaySize.w, displaySize.h);
+              : measureMediaBox(clip, t, mediaFiles, canvasW, canvasH, displaySize.w, displaySize.h);
           return (
             <ClipHandle
               key={clip.id}
@@ -238,9 +238,9 @@ function measureTextBox(clip: TextClip, transform: Transform, canvasH: number, d
   };
 }
 
-/** Video bounding box in display px when fit='free'. Mirrors PreviewPanel.drawVideoClip. */
-function measureVideoBox(
-  clip: VideoClip,
+/** Video/image bounding box in display px when fit='free'. Mirrors PreviewPanel.drawVideoClip/drawImageClip. */
+function measureMediaBox(
+  clip: VideoClip | ImageClip,
   transform: Transform,
   mediaFiles: Record<string, MediaFile>,
   canvasW: number,

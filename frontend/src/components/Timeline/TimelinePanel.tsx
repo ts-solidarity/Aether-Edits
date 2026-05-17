@@ -1,9 +1,53 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useProject } from '../../state/ProjectContext';
-import type { Clip, MediaFile, ProjectState, VideoClip } from '../../types/project';
-import { DEFAULT_TRANSFORM } from '../../types/project';
+import type { Clip, ImageClip, MediaFile, ProjectState, TransitionKind, VideoClip } from '../../types/project';
+import { DEFAULT_TRANSFORM, clipDuration } from '../../types/project';
 import { newId } from '../../utils/id';
 import { getThumbnail } from '../../services/thumbnails';
+import { FX_DRAG_MIME } from '../Sidebar/EffectsPanel';
+
+/** Build a VideoClip or ImageClip from a MediaFile dropped on the timeline. */
+function buildClipFromMedia(
+  media: MediaFile,
+  trackId: string,
+  timelineStart: number
+): VideoClip | ImageClip {
+  if (media.kind === 'image') {
+    return {
+      id: newId('clip'),
+      kind: 'image',
+      mediaFileId: media.id,
+      sourceStart: 0,
+      sourceEnd: media.duration,
+      timelineStart,
+      trackId,
+      fit: 'free',
+      transform: { ...DEFAULT_TRANSFORM },
+      color: null,
+      speed: 1,
+      transitionOut: null,
+    };
+  }
+  return {
+    id: newId('clip'),
+    kind: 'video',
+    mediaFileId: media.id,
+    sourceStart: 0,
+    sourceEnd: media.duration,
+    timelineStart,
+    trackId,
+    volume: 1,
+    muted: false,
+    pan: 0,
+    duckSourceClipId: null,
+    duckAmount: 0.6,
+    fit: 'contain',
+    transform: { ...DEFAULT_TRANSFORM },
+    color: null,
+    speed: 1,
+    transitionOut: null,
+  };
+}
 
 const ADJACENCY_EPS = 0.01;
 
@@ -41,7 +85,7 @@ function collectSnapPoints(state: ProjectState, excludeClipId: string): number[]
   for (const clip of Object.values(state.clips)) {
     if (clip.id === excludeClipId) continue;
     pts.add(clip.timelineStart);
-    pts.add(clip.timelineStart + (clip.sourceEnd - clip.sourceStart));
+    pts.add(clip.timelineStart + clipDuration(clip));
   }
   return Array.from(pts);
 }
@@ -88,7 +132,7 @@ function clampToFreeSpace(
   let cursor = 0;
   for (const o of others) {
     const oStart = o.timelineStart;
-    const oEnd = oStart + (o.sourceEnd - o.sourceStart);
+    const oEnd = oStart + clipDuration(o);
     if (oStart > cursor) gaps.push([cursor, oStart]);
     cursor = Math.max(cursor, oEnd);
   }
@@ -126,7 +170,7 @@ function maxRightEdge(others: Clip[], originTl: number): number {
 function minLeftEdge(others: Clip[], originTl: number): number {
   let max = 0;
   for (const o of others) {
-    const oEnd = o.timelineStart + (o.sourceEnd - o.sourceStart);
+    const oEnd = o.timelineStart + clipDuration(o);
     if (oEnd <= originTl + 1e-6) {
       max = Math.max(max, oEnd);
     }
@@ -209,7 +253,7 @@ function formatRulerTime(seconds: number): string {
 function getTimelineDuration(clips: Record<string, Clip>): number {
   let max = 0;
   for (const clip of Object.values(clips)) {
-    const end = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
+    const end = clip.timelineStart + clipDuration(clip);
     if (end > max) max = end;
   }
   return Math.max(max + 5, 30); // At least 30s visible, with 5s padding
@@ -264,17 +308,35 @@ export function TimelinePanel() {
         let hoveredTrackId: string | null = null;
         for (const el of stack) {
           const h = el as HTMLElement;
-          // direct hit on a track-row element (ignore nested .clip children)
           if (h.hasAttribute('data-track-id')) {
             hoveredTrackId = h.getAttribute('data-track-id');
             break;
           }
         }
-        const targetTrackId = hoveredTrackId || d.preview.trackId || d.origTrackId;
+
+        // If the cursor is below all tracks (or near the bottom edge of the last
+        // one) and we have an in-DOM tracks container to compare against, mark
+        // this as a "new track" drop target.
+        let targetTrackId: string;
+        if (hoveredTrackId) {
+          targetTrackId = hoveredTrackId;
+        } else {
+          const tracksContainer = document.querySelector('.tracks-container') as HTMLElement | null;
+          const containerRect = tracksContainer?.getBoundingClientRect();
+          if (
+            containerRect &&
+            e.clientY >= containerRect.bottom - 4 &&
+            e.clientX >= containerRect.left &&
+            e.clientX <= containerRect.right
+          ) {
+            targetTrackId = '__new__';
+          } else {
+            targetTrackId = d.preview.trackId || d.origTrackId;
+          }
+        }
 
         let newTl = Math.max(0, d.origTimelineStart + dtime);
 
-        // Snap both edges; pick whichever is closer.
         const leftSnap = snap(newTl, snapPoints, threshold);
         const rightSnap = snap(newTl + clipDur, snapPoints, threshold);
         if (leftSnap !== null && (rightSnap === null || Math.abs(newTl - leftSnap) <= Math.abs(newTl + clipDur - rightSnap))) {
@@ -287,8 +349,13 @@ export function TimelinePanel() {
         }
 
         // Clamp into the nearest free gap on the target track so clips never overlap.
-        const others = otherClipsOnTrack(curState, targetTrackId, d.clipId);
-        newTl = clampToFreeSpace(newTl, clipDur, others);
+        // A "__new__" track is empty, so any timelineStart is free.
+        if (targetTrackId !== '__new__') {
+          const others = otherClipsOnTrack(curState, targetTrackId, d.clipId);
+          newTl = clampToFreeSpace(newTl, clipDur, others);
+        } else {
+          newTl = Math.max(0, newTl);
+        }
 
         preview.timelineStart = newTl;
         preview.trackId = targetTrackId;
@@ -356,14 +423,29 @@ export function TimelinePanel() {
       }
       if (d.hasMoved) {
         if (d.mode === 'move') {
-          dispatch({
-            type: 'MOVE_CLIP',
-            payload: {
-              clipId: d.clipId,
-              newTimelineStart: d.preview.timelineStart,
-              newTrackId: d.preview.trackId !== d.origTrackId ? d.preview.trackId : undefined,
-            },
-          });
+          if (d.preview.trackId === '__new__') {
+            // Materialise a fresh track and move the clip onto it.
+            const newTrackId = newId('track');
+            const trackName = `Track ${stateRef.current.trackOrder.length + 1}`;
+            dispatch({ type: 'ADD_TRACK', payload: { name: trackName, id: newTrackId } });
+            dispatch({
+              type: 'MOVE_CLIP',
+              payload: {
+                clipId: d.clipId,
+                newTimelineStart: d.preview.timelineStart,
+                newTrackId,
+              },
+            });
+          } else {
+            dispatch({
+              type: 'MOVE_CLIP',
+              payload: {
+                clipId: d.clipId,
+                newTimelineStart: d.preview.timelineStart,
+                newTrackId: d.preview.trackId !== d.origTrackId ? d.preview.trackId : undefined,
+              },
+            });
+          }
         } else {
           dispatch({
             type: 'TRIM_CLIP',
@@ -462,25 +544,7 @@ export function TimelinePanel() {
       const clipDur = media.duration;
       const timelineStart = clampToFreeSpace(proposedTl, clipDur, others);
 
-      const clipId = newId('clip');
-      const clip: VideoClip = {
-        id: clipId,
-        kind: 'video',
-        mediaFileId,
-        sourceStart: 0,
-        sourceEnd: media.duration,
-        timelineStart,
-        trackId,
-        volume: 1,
-        muted: false,
-        pan: 0,
-        duckSourceClipId: null,
-        duckAmount: 0.6,
-        fit: 'contain',
-        transform: { ...DEFAULT_TRANSFORM },
-        color: null,
-        transitionOut: null,
-      };
+      const clip = buildClipFromMedia(media, trackId, timelineStart);
       dispatch({ type: 'ADD_CLIP', payload: { clip, trackId } });
     },
     [state, dispatch, zoom]
@@ -505,28 +569,10 @@ export function TimelinePanel() {
       }
 
       const newTrackId = newId('track');
-      const trackName = `Video ${state.trackOrder.length + 1}`;
+      const trackName = `Track ${state.trackOrder.length + 1}`;
       dispatch({ type: 'ADD_TRACK', payload: { name: trackName, id: newTrackId } });
 
-      const clipId = newId('clip');
-      const clip: VideoClip = {
-        id: clipId,
-        kind: 'video',
-        mediaFileId,
-        sourceStart: 0,
-        sourceEnd: media.duration,
-        timelineStart: proposedTl,
-        trackId: newTrackId,
-        volume: 1,
-        muted: false,
-        pan: 0,
-        duckSourceClipId: null,
-        duckAmount: 0.6,
-        fit: 'contain',
-        transform: { ...DEFAULT_TRANSFORM },
-        color: null,
-        transitionOut: null,
-      };
+      const clip = buildClipFromMedia(media, newTrackId, proposedTl);
       dispatch({ type: 'ADD_CLIP', payload: { clip, trackId: newTrackId } });
     },
     [state, dispatch, zoom]
@@ -534,6 +580,39 @@ export function TimelinePanel() {
 
   const [newTrackHover, setNewTrackHover] = useState(false);
   const [hoverTrackId, setHoverTrackId] = useState<string | null>(null);
+
+  // Effect-card drag is happening somewhere on the page. Used to reveal extra
+  // drop slots between adjacent clips while the user holds an FX card.
+  const [fxDragging, setFxDragging] = useState(false);
+  // The clip currently being hovered by an FX drag (for visual highlight).
+  const [fxDropTarget, setFxDropTarget] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onStart = () => setFxDragging(true);
+    const onEnd = () => {
+      setFxDragging(false);
+      setFxDropTarget(null);
+    };
+    window.addEventListener('aether-fx-drag-start', onStart);
+    window.addEventListener('aether-fx-drag-end', onEnd);
+    return () => {
+      window.removeEventListener('aether-fx-drag-start', onStart);
+      window.removeEventListener('aether-fx-drag-end', onEnd);
+    };
+  }, []);
+
+  const applyTransitionToClip = useCallback(
+    (clipId: string, kind: TransitionKind) => {
+      const existing = stateRef.current.clips[clipId];
+      if (!existing) return;
+      const duration = existing.transitionOut?.duration ?? 1;
+      dispatch({
+        type: 'SET_CLIP_TRANSITION',
+        payload: { clipId, transition: { kind, duration } },
+      });
+    },
+    [dispatch]
+  );
 
   const handleClipClick = (e: React.MouseEvent, clipId: string) => {
     e.stopPropagation();
@@ -607,7 +686,7 @@ export function TimelinePanel() {
       const idx = sorted.findIndex((c) => c.id === contextClip.id);
       if (idx >= 0 && idx < sorted.length - 1) {
         const next = sorted[idx + 1];
-        const end = contextClip.timelineStart + (contextClip.sourceEnd - contextClip.sourceStart);
+        const end = contextClip.timelineStart + clipDuration(contextClip);
         hasAdjacentNext = Math.abs(next.timelineStart - end) < ADJACENCY_EPS;
       }
     }
@@ -736,6 +815,20 @@ export function TimelinePanel() {
               {state.trackOrder.map((trackId, trackIdx) => {
                 const track = state.tracks[trackId];
                 const trackHue = (270 + trackIdx * 73) % 360;
+                // Adjacent pairs on this track for FX-drag gap slots.
+                const sortedTrackClips = track.clips
+                  .map((id) => state.clips[id])
+                  .filter((c): c is Clip => Boolean(c))
+                  .sort((a, b) => a.timelineStart - b.timelineStart);
+                const gapSlots: { x: number; leftClipId: string }[] = [];
+                for (let gi = 0; gi < sortedTrackClips.length - 1; gi++) {
+                  const a = sortedTrackClips[gi];
+                  const b = sortedTrackClips[gi + 1];
+                  const aEnd = a.timelineStart + clipDuration(a);
+                  if (Math.abs(aEnd - b.timelineStart) < ADJACENCY_EPS) {
+                    gapSlots.push({ x: aEnd * zoom, leftClipId: a.id });
+                  }
+                }
                 return (
                   <div
                     key={trackId}
@@ -752,6 +845,31 @@ export function TimelinePanel() {
                       handleTrackDrop(e, trackId);
                     }}
                   >
+                    {fxDragging && gapSlots.map((slot, gi) => (
+                      <div
+                        key={`gap-${gi}`}
+                        className="clip-gap-slot"
+                        style={{ left: slot.x - 9, width: 18 }}
+                        onDragOver={(e) => {
+                          if (!e.dataTransfer.types.includes(FX_DRAG_MIME)) return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          e.dataTransfer.dropEffect = 'copy';
+                          setFxDropTarget(slot.leftClipId);
+                        }}
+                        onDragLeave={() =>
+                          setFxDropTarget((prev) => (prev === slot.leftClipId ? null : prev))
+                        }
+                        onDrop={(e) => {
+                          const kind = e.dataTransfer.getData(FX_DRAG_MIME);
+                          if (!kind) return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          applyTransitionToClip(slot.leftClipId, kind as TransitionKind);
+                          setFxDropTarget(null);
+                        }}
+                      />
+                    ))}
                     {track.clips.map((clipId) => {
                       const clip = state.clips[clipId];
                       if (!clip) return null;
@@ -768,22 +886,30 @@ export function TimelinePanel() {
                         : clip;
                       const isVideo = effClip.kind === 'video';
                       const videoClip = isVideo ? (effClip as VideoClip) : null;
-                      const media = videoClip ? state.mediaFiles[videoClip.mediaFileId] : undefined;
-                      const clipDuration = effClip.sourceEnd - effClip.sourceStart;
+                      const isImage = effClip.kind === 'image';
+                      const mediaId =
+                        videoClip?.mediaFileId ??
+                        (isImage ? (effClip as ImageClip).mediaFileId : undefined);
+                      const media = mediaId ? state.mediaFiles[mediaId] : undefined;
+                      const clipDurSec = clipDuration(effClip);
                       const left = effClip.timelineStart * zoom;
-                      const width = clipDuration * zoom;
+                      const width = clipDurSec * zoom;
                       const isSelected = state.selectedClipIds.includes(clipId);
 
-                      const label = effClip.kind === 'video' ? media?.name ?? 'Clip' : effClip.text || 'Text';
-                      const tooltip = `${label}\n${formatRulerTime(clipDuration)}`;
+                      const label =
+                        effClip.kind === 'video' || effClip.kind === 'image'
+                          ? media?.name ?? (effClip.kind === 'image' ? 'Image' : 'Clip')
+                          : effClip.text || 'Text';
+                      const tooltip = `${label}\n${formatRulerTime(clipDurSec)}`;
 
                       const showHandles = width > 24;
                       const hasFadeOut = !!effClip.transitionOut;
 
+                      const isFxTarget = fxDropTarget === clipId;
                       return (
                         <div
                           key={clipId}
-                          className={`clip clip-${effClip.kind} ${isSelected ? 'selected' : ''} ${isDragging ? 'dragging' : ''}`}
+                          className={`clip clip-${effClip.kind} ${isSelected ? 'selected' : ''} ${isDragging ? 'dragging' : ''} ${isFxTarget ? 'fx-drop-target' : ''}`}
                           style={{ left, width: Math.max(width, 4) }}
                           title={tooltip}
                           onMouseDown={(e) => beginDrag(e, clipId, 'move')}
@@ -795,6 +921,25 @@ export function TimelinePanel() {
                             handleClipClick(e, clipId);
                           }}
                           onContextMenu={(e) => handleClipContextMenu(e, clipId)}
+                          onDragOver={(e) => {
+                            if (!e.dataTransfer.types.includes(FX_DRAG_MIME)) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.dataTransfer.dropEffect = 'copy';
+                            setFxDropTarget(clipId);
+                          }}
+                          onDragLeave={(e) => {
+                            if (!e.dataTransfer.types.includes(FX_DRAG_MIME)) return;
+                            setFxDropTarget((prev) => (prev === clipId ? null : prev));
+                          }}
+                          onDrop={(e) => {
+                            const kind = e.dataTransfer.getData(FX_DRAG_MIME);
+                            if (!kind) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            applyTransitionToClip(clipId, kind as TransitionKind);
+                            setFxDropTarget(null);
+                          }}
                         >
                           {effClip.kind === 'video' && media ? (
                             <ClipFilmStrip clip={effClip as VideoClip} media={media} widthPx={width} />
@@ -847,29 +992,41 @@ export function TimelinePanel() {
             {drag && drag.preview.trackId !== drag.origTrackId && (() => {
               const clip = state.clips[drag.clipId];
               if (!clip) return null;
-              const trackIdx = state.trackOrder.indexOf(drag.preview.trackId);
-              if (trackIdx < 0) return null;
+              const isNew = drag.preview.trackId === '__new__';
+              const trackIdx = isNew ? state.trackOrder.length : state.trackOrder.indexOf(drag.preview.trackId);
+              if (!isNew && trackIdx < 0) return null;
               const label =
                 clip.kind === 'video'
                   ? state.mediaFiles[clip.mediaFileId]?.name ?? 'Clip'
-                  : clip.text || 'Text';
-              const dur = drag.preview.sourceEnd - drag.preview.sourceStart;
+                  : clip.kind === 'image'
+                    ? state.mediaFiles[clip.mediaFileId]?.name ?? 'Image'
+                    : clip.text || 'Text';
+              const speed = (clip as { speed?: number }).speed ?? 1;
+              const dur = (drag.preview.sourceEnd - drag.preview.sourceStart) / Math.max(0.01, speed);
               const left = drag.preview.timelineStart * zoom;
               const width = dur * zoom;
               const top = trackIdx * TRACK_ROW_HEIGHT + 4;
               return (
-                <div
-                  className={`clip clip-${clip.kind} dragging`}
-                  style={{
-                    left,
-                    width: Math.max(width, 4),
-                    top,
-                    position: 'absolute',
-                    pointerEvents: 'none',
-                  }}
-                >
-                  <span>{width > 60 ? label : ''}</span>
-                </div>
+                <>
+                  {isNew && (
+                    <div
+                      className="ghost-track-row"
+                      style={{ top: trackIdx * TRACK_ROW_HEIGHT }}
+                    />
+                  )}
+                  <div
+                    className={`clip clip-${clip.kind} dragging`}
+                    style={{
+                      left,
+                      width: Math.max(width, 4),
+                      top,
+                      position: 'absolute',
+                      pointerEvents: 'none',
+                    }}
+                  >
+                    <span>{width > 60 ? label : ''}</span>
+                  </div>
+                </>
               );
             })()}
 
@@ -904,6 +1061,26 @@ export function TimelinePanel() {
                 {contextClip?.transitionOut ? '✕ Remove crossfade' : '◈ Add crossfade'}
               </span>
             </button>
+          )}
+          {contextClip && (
+            <div className="context-menu-submenu">
+              <div className="context-menu-submenu-label">⚡ Speed</div>
+              <div className="context-menu-speed-grid">
+                {[0.25, 0.5, 1, 1.5, 2, 4].map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    className={`context-menu-speed-chip ${Math.abs(contextClip.speed - s) < 0.01 ? 'active' : ''}`}
+                    onClick={() => {
+                      dispatch({ type: 'SET_CLIP_SPEED', payload: { clipId: contextClip.id, speed: s } });
+                      setContextMenu(null);
+                    }}
+                  >
+                    {s}×
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
           <button className="context-menu-item danger" onClick={handleDelete}>
             <span>🗑️ Delete</span>

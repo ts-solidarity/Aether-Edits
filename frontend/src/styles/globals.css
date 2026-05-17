@@ -1,3 +1,32 @@
+/* Bundled fonts — keep families in lockstep with FONT_FAMILIES in types/project.ts.
+   These are loaded once at app start so previews can use the same families that
+   the export pipeline will render. */
+@font-face {
+  font-family: 'Aether Sans';
+  src: url('/fonts/sans.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Aether Serif';
+  src: url('/fonts/serif.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Aether Mono';
+  src: url('/fonts/mono.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Aether Display';
+  src: url('/fonts/display.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Aether Handwriting';
+  src: url('/fonts/handwriting.ttf') format('truetype');
+  font-display: swap;
+}
+
 *,
 *::before,
 *::after {
@@ -1096,6 +1125,32 @@ input, select, textarea {
   content: '';
 }
 
+.ghost-track-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 48px;
+  border: 2px dashed var(--accent-secondary);
+  background: rgba(0, 224, 255, 0.08);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 5;
+  box-shadow: 0 0 20px rgba(0, 224, 255, 0.25);
+}
+
+.ghost-track-row::after {
+  content: '+ Drop to create new track';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent-secondary);
+}
+
 .new-track-drop-zone {
   height: 48px;
   position: relative;
@@ -1228,6 +1283,32 @@ input, select, textarea {
     0 6px 14px rgba(0, 0, 0, 0.4);
 }
 
+.clip.fx-drop-target {
+  box-shadow:
+    0 0 0 2px var(--accent-secondary),
+    0 0 24px rgba(0, 224, 255, 0.55),
+    0 6px 14px rgba(0, 0, 0, 0.4);
+  filter: brightness(1.1);
+}
+
+.clip-gap-slot {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  z-index: 4;
+  border-radius: 4px;
+  background: rgba(0, 224, 255, 0.15);
+  border: 1.5px dashed rgba(0, 224, 255, 0.5);
+  pointer-events: auto;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.clip-gap-slot:hover {
+  background: rgba(0, 224, 255, 0.35);
+  border-color: rgba(0, 224, 255, 0.9);
+  box-shadow: 0 0 12px rgba(0, 224, 255, 0.45);
+}
+
 /* Text clips: warm gradient (override per-track hue). */
 .clip-text {
   background: var(--accent-gradient-warm);
@@ -1300,6 +1381,52 @@ input, select, textarea {
 
 .context-menu-item.danger:hover {
   background: var(--danger);
+  color: white;
+}
+
+.context-menu-submenu {
+  padding: 6px 10px;
+  border-top: 1px dashed var(--border-color);
+  border-bottom: 1px dashed var(--border-color);
+  margin: 2px 0;
+}
+
+.context-menu-submenu-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.context-menu-speed-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 4px;
+}
+
+.context-menu-speed-chip {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  font-variant-numeric: tabular-nums;
+}
+
+.context-menu-speed-chip:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: var(--border-hover);
+}
+
+.context-menu-speed-chip.active {
+  background: var(--accent-gradient);
+  border-color: transparent;
   color: white;
 }
 

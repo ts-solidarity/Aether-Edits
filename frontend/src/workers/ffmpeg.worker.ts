@@ -2,6 +2,7 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { buildExportCommand, type ExportTrack, type QualityPreset } from '../services/filterGraph';
+import type { FontFamilyKey, MediaKind } from '../types/project';
 
 export interface ExportFile {
   logicalName: string;
@@ -15,6 +16,7 @@ export interface ExportRequest {
   tracks: ExportTrack[];
   mediaInputNames: Record<string, string>;
   mediaHasAudio: Record<string, boolean>;
+  mediaKinds: Record<string, MediaKind>;
   probeMediaIds: string[];
   canvas: [number, number];
   timelineDuration: number;
@@ -34,19 +36,58 @@ const ctx = self as unknown as DedicatedWorkerGlobalScope;
 let ffmpeg: FFmpeg | null = null;
 let timelineDuration = 0;
 let lastProgress = 0;
-let fontLoaded = false;
+const loadedFonts = new Set<FontFamilyKey>();
 
-async function ensureFontLoaded(ff: FFmpeg): Promise<void> {
-  if (fontLoaded) return;
-  try {
-    const resp = await fetch('/fonts/text.ttf');
-    if (!resp.ok) throw new Error(`font fetch ${resp.status}`);
+const FONT_FILE_BY_FAMILY: Record<FontFamilyKey, string> = {
+  sans: 'sans.ttf',
+  serif: 'serif.ttf',
+  mono: 'mono.ttf',
+  display: 'display.ttf',
+  handwriting: 'handwriting.ttf',
+};
+
+async function ensureFontsLoaded(ff: FFmpeg, families: FontFamilyKey[]): Promise<void> {
+  for (const family of families) {
+    if (loadedFonts.has(family)) continue;
+    const file = FONT_FILE_BY_FAMILY[family];
+    if (!file) continue;
+    const resp = await fetch(`/fonts/${file}`);
+    if (!resp.ok) {
+      // Fall back to sans before failing the export.
+      if (family !== 'sans') {
+        await ensureFontsLoaded(ff, ['sans']);
+        const sansBytes = new Uint8Array(await (await fetch('/fonts/sans.ttf')).arrayBuffer());
+        await ff.writeFile(file, sansBytes);
+        loadedFonts.add(family);
+        continue;
+      }
+      throw new Error(`Failed to load font "${family}": HTTP ${resp.status}`);
+    }
     const bytes = new Uint8Array(await resp.arrayBuffer());
-    await ff.writeFile('text.ttf', bytes);
-    fontLoaded = true;
-  } catch (e) {
-    // Don't crash — exports without text clips still work; text exports will fail cleanly.
-    console.warn('Text font load failed:', e);
+    await ff.writeFile(file, bytes);
+    loadedFonts.add(family);
+  }
+}
+
+/** Best-effort: remove leftover FS entries from a previous (possibly crashed)
+ *  export. The FFmpeg singleton survives across messages, so stale `input_*`
+ *  or `output.mp4` entries could otherwise interfere with the next run. */
+async function cleanupStaleFsEntries(ff: FFmpeg): Promise<void> {
+  type DirEntry = { name: string; isDir: boolean };
+  let entries: DirEntry[] = [];
+  try {
+    entries = (await ff.listDir('/')) as DirEntry[];
+  } catch {
+    return;
+  }
+  const protect = new Set([
+    'text.ttf', 'sans.ttf', 'serif.ttf', 'mono.ttf', 'display.ttf', 'handwriting.ttf',
+    '.', '..', 'tmp', 'home', 'dev', 'proc',
+  ]);
+  for (const entry of entries) {
+    if (!entry || entry.isDir) continue;
+    if (protect.has(entry.name)) continue;
+    await ff.deleteFile(entry.name).catch(() => {});
   }
 }
 
@@ -95,9 +136,20 @@ ctx.onmessage = async (ev: MessageEvent<ExportRequest>) => {
     timelineDuration = req.timelineDuration;
     lastProgress = 0;
 
-    // Load font when any text clip exists.
-    const hasText = req.tracks.some((t) => t.clips.some((c) => c.kind === 'text'));
-    if (hasText) await ensureFontLoaded(ff);
+    // Wipe any leftover files in FS from a previous, possibly crashed export.
+    await cleanupStaleFsEntries(ff);
+
+    // Load each font family referenced by text clips. Throws on failure so the
+    // user sees a clear error instead of an opaque drawtext-no-font failure.
+    const fontKeys: FontFamilyKey[] = [];
+    for (const t of req.tracks) {
+      for (const c of t.clips) {
+        if (c.kind === 'text' && !fontKeys.includes(c.fontFamily)) {
+          fontKeys.push(c.fontFamily);
+        }
+      }
+    }
+    if (fontKeys.length > 0) await ensureFontsLoaded(ff, fontKeys);
 
     for (const { logicalName, file } of req.files) {
       await ff.writeFile(logicalName, await fetchFile(file));
@@ -116,6 +168,7 @@ ctx.onmessage = async (ev: MessageEvent<ExportRequest>) => {
       tracks: req.tracks,
       mediaInputNames: req.mediaInputNames,
       mediaHasAudio: hasAudio,
+      mediaKinds: req.mediaKinds,
       canvas: req.canvas,
       timelineDuration: req.timelineDuration,
       quality: req.quality,

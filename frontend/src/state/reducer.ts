@@ -214,6 +214,7 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
         text: action.payload.text ?? clip.text,
         color: action.payload.color ?? clip.color,
         fontSize: action.payload.fontSize ?? clip.fontSize,
+        fontFamily: action.payload.fontFamily ?? clip.fontFamily,
       };
       return {
         ...state,
@@ -231,9 +232,20 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
       };
     }
 
+    case 'SET_CLIP_SPEED': {
+      const clip = state.clips[action.payload.clipId];
+      if (!clip) return state;
+      const s = Math.max(0.25, Math.min(4, action.payload.speed));
+      if (clip.speed === s) return state;
+      return {
+        ...state,
+        clips: { ...state.clips, [clip.id]: { ...clip, speed: s } },
+      };
+    }
+
     case 'SET_CLIP_FIT': {
       const clip = state.clips[action.payload.clipId];
-      if (!clip || clip.kind !== 'video') return state;
+      if (!clip || (clip.kind !== 'video' && clip.kind !== 'image')) return state;
       if (clip.fit === action.payload.fit) return state;
       return {
         ...state,
@@ -243,7 +255,7 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
 
     case 'SET_CLIP_COLOR': {
       const clip = state.clips[action.payload.clipId];
-      if (!clip || clip.kind !== 'video') return state;
+      if (!clip || (clip.kind !== 'video' && clip.kind !== 'image')) return state;
       return {
         ...state,
         clips: { ...state.clips, [clip.id]: { ...clip, color: action.payload.color } },
