@@ -1,8 +1,6 @@
 import type { ColorAdjust, FontFamilyKey, MediaFile, MediaKind, Transform, VideoFit } from '../types/project';
 
 export const EXPORT_FPS = 30;
-const DEFAULT_W = 1920;
-const DEFAULT_H = 1080;
 
 export interface ExportVideoClip {
   kind: 'video';
@@ -86,14 +84,21 @@ function even(n: number): number {
 }
 
 export function computeCanvas(mediaFiles: MediaFile[]): [number, number] {
-  let maxW = 0;
+  // Always produce a 16:9 canvas so the export aspect matches the preview
+  // (which is fixed 16:9). Height is picked from the largest source so SD
+  // sources don't get unnecessarily upscaled; tiny sources still land at a
+  // watchable size.
   let maxH = 0;
   for (const m of mediaFiles) {
-    if (m.width > maxW) maxW = m.width;
     if (m.height > maxH) maxH = m.height;
   }
-  if (maxW <= 0 || maxH <= 0) return [DEFAULT_W, DEFAULT_H];
-  return [even(maxW), even(maxH)];
+  const h =
+    maxH >= 1080 ? 1080 :
+    maxH >= 720 ? 720 :
+    maxH > 0 ? Math.max(480, even(maxH)) :
+    720;
+  const w = even(Math.round((h * 16) / 9));
+  return [w, h];
 }
 
 export function computeTimelineDuration(tracks: ExportTrack[]): number {
