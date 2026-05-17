@@ -105,6 +105,9 @@ body {
     var(--bg-app);
   color: var(--text-primary);
   overflow: hidden;
+  /* Custom cursor — the SVG hotspot is its tip (2,2). The trailing `auto`
+     keyword is the fallback for browsers that can't load the SVG. */
+  cursor: url('/cursors/default.svg') 2 2, auto;
   height: 100vh;
 }
 
@@ -114,14 +117,60 @@ body {
   flex-direction: column;
 }
 
+button,
+a[href],
+[role='button'],
+.fx-card,
+.file-item,
+.sidebar-tab,
+.tool-btn,
+.inspector-chip,
+.context-menu-item,
+.context-menu-speed-chip,
+.btn {
+  cursor: url('/cursors/pointer.svg') 8 4, pointer;
+}
+
 button {
   font-family: inherit;
-  cursor: pointer;
   border: none;
   outline: none;
   -webkit-user-select: none;
   user-select: none;
 }
+
+/* Keep system cursors for text/number/color inputs and the timeline ruler. */
+input[type='text'],
+input[type='number'],
+textarea,
+[contenteditable='true'] {
+  cursor: text;
+}
+input[type='color'] {
+  cursor: url('/cursors/pointer.svg') 8 4, pointer;
+}
+
+/* Resize cursors stay native — system shapes are unambiguous. */
+.clip-trim-handle.left,
+.clip-trim-handle.right { cursor: ew-resize; }
+.overlay-handle-corner.tl,
+.overlay-handle-corner.br { cursor: nwse-resize; }
+.overlay-handle-corner.tr,
+.overlay-handle-corner.bl { cursor: nesw-resize; }
+.overlay-handle-rotate { cursor: grab; }
+.overlay-handle-rotate:active { cursor: grabbing; }
+
+/* The clip itself uses grab; let the system shape win. */
+.clip { cursor: grab; }
+.clip:active,
+.clip.dragging { cursor: grabbing; }
+
+/* Timeline scroll area: text caret implies selectable text, which it isn't.
+   Use the default arrow instead. */
+.timeline-scroll,
+.timeline-content,
+.tracks-container,
+.track-row { cursor: url('/cursors/default.svg') 2 2, default; }
 
 input, select, textarea {
   font-family: inherit;
