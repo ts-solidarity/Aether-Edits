@@ -14,18 +14,6 @@ import {
 
 export type ExportPhase = 'idle' | 'waiting' | 'loading-core' | 'exporting' | 'done' | 'error';
 
-export type ResolutionPreset = 'auto' | '480p' | '720p' | '1080p' | '4k';
-
-function resolutionToCanvas(preset: ResolutionPreset): [number, number] | null {
-  switch (preset) {
-    case '480p': return [854, 480];
-    case '720p': return [1280, 720];
-    case '1080p': return [1920, 1080];
-    case '4k': return [3840, 2160];
-    default: return null;
-  }
-}
-
 interface ExportState {
   phase: ExportPhase;
   progress: number;
@@ -93,7 +81,7 @@ export function useExport() {
   }, [revokeDownloadUrl]);
 
   const startExportFlow = useCallback(
-    async (quality: QualityPreset = 'fast', resolution: ResolutionPreset = 'auto') => {
+    async (quality: QualityPreset = 'fast') => {
       if (!readiness.hasClips) {
         setExportState({ phase: 'error', progress: 0, error: 'No clips to export', downloadUrl: null });
         return;
@@ -255,7 +243,12 @@ export function useExport() {
         }
 
         const involvedMedia = involvedIds.map((id) => state.mediaFiles[id]!);
-        const canvas = resolutionToCanvas(resolution) ?? computeCanvas(involvedMedia);
+        // Project canvas drives both preview and export — WYSIWYG. If the
+        // project canvas is somehow invalid, fall back to source-derived dims.
+        const canvas: [number, number] =
+          state.canvas.width > 0 && state.canvas.height > 0
+            ? [state.canvas.width, state.canvas.height]
+            : computeCanvas(involvedMedia);
         const timelineDuration = computeTimelineDuration(tracks);
 
         setExportState({ phase: 'loading-core', progress: 0, error: null, downloadUrl: null });

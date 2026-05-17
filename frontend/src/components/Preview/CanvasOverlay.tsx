@@ -18,6 +18,8 @@ interface Props {
   mediaFiles: Record<string, MediaFile>;
   pendingTransform: PendingTransform | null;
   setPendingTransform: Dispatch<SetStateAction<PendingTransform | null>>;
+  editingTextId: string | null;
+  setEditingTextId: Dispatch<SetStateAction<string | null>>;
 }
 
 type DragMode = 'move' | 'scale-corner' | 'rotate';
@@ -51,6 +53,8 @@ export function CanvasOverlay({
   mediaFiles,
   pendingTransform,
   setPendingTransform,
+  editingTextId,
+  setEditingTextId,
 }: Props) {
   const overlayRef = useRef<HTMLDivElement>(null);
   const [displaySize, setDisplaySize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -206,6 +210,7 @@ export function CanvasOverlay({
             clip.kind === 'text'
               ? measureTextBox(clip, t, canvasH, displaySize.h)
               : measureMediaBox(clip, t, mediaFiles, canvasW, canvasH, displaySize.w, displaySize.h);
+          const isEditingThis = clip.kind === 'text' && editingTextId === clip.id;
           return (
             <ClipHandle
               key={clip.id}
@@ -216,9 +221,65 @@ export function CanvasOverlay({
               boxH={box.h}
               isSelected={isSelected}
               onPointerDown={(e, mode) => beginDrag(e, clip, mode, t)}
+              onDoubleClick={
+                clip.kind === 'text' ? () => setEditingTextId(clip.id) : undefined
+              }
+              suppressPointer={isEditingThis}
             />
           );
         })}
+      {displaySize.w > 0 &&
+        editingTextId &&
+        (() => {
+          const clip = activeClips.find((c) => c.id === editingTextId);
+          if (!clip || clip.kind !== 'text') return null;
+          const t = clip.transform;
+          const box = measureTextBox(clip, t, canvasH, displaySize.h);
+          const fontSizeCanvasPx = (clip.fontSize / 100) * canvasH * t.scale;
+          const ratio = canvasH > 0 ? displaySize.h / canvasH : 1;
+          const fontPxDisplay = Math.max(10, fontSizeCanvasPx * ratio);
+          const cx = t.x * displaySize.w;
+          const cy = t.y * displaySize.h;
+          const w = Math.max(80, box.w + 20);
+          const h = Math.max(28, fontPxDisplay * 1.4);
+          const commit = (next: string) => {
+            dispatch({
+              type: 'UPDATE_TEXT_CLIP',
+              payload: { clipId: clip.id, text: next },
+            });
+          };
+          return (
+            <input
+              key={`edit-${clip.id}`}
+              autoFocus
+              defaultValue={clip.text}
+              onChange={(e) => commit(e.target.value)}
+              onBlur={() => setEditingTextId(null)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  setEditingTextId(null);
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setEditingTextId(null);
+                }
+                e.stopPropagation();
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="overlay-text-editor"
+              style={{
+                position: 'absolute',
+                left: cx - w / 2,
+                top: cy - h / 2,
+                width: w,
+                height: h,
+                fontSize: fontPxDisplay,
+                color: clip.color,
+                transform: `rotate(${t.rotation}deg)`,
+              }}
+            />
+          );
+        })()}
     </div>
   );
 }
@@ -231,6 +292,8 @@ interface HandleProps {
   boxH: number;
   isSelected: boolean;
   onPointerDown: (e: React.PointerEvent, mode: DragMode) => void;
+  onDoubleClick?: () => void;
+  suppressPointer?: boolean;
 }
 
 /** Approximate text bounding box in display px. Mirrors PreviewPanel.drawTextClip. */
@@ -279,6 +342,8 @@ function ClipHandle({
   boxH,
   isSelected,
   onPointerDown,
+  onDoubleClick,
+  suppressPointer,
 }: HandleProps) {
   const cx = transform.x * displayW;
   const cy = transform.y * displayH;
@@ -295,8 +360,10 @@ function ClipHandle({
         width: w,
         height: h,
         transform: `rotate(${transform.rotation}deg)`,
+        pointerEvents: suppressPointer ? 'none' : undefined,
       }}
       onPointerDown={(e) => onPointerDown(e, 'move')}
+      onDoubleClick={onDoubleClick}
     >
       {isSelected && (
         <>

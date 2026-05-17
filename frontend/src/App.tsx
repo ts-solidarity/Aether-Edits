@@ -11,6 +11,18 @@ function EditorShortcuts() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Don't hijack keystrokes when the user is typing into an input. Without
+      // this guard Backspace in the inspector text field deletes the entire
+      // clip, Space inserts a play/pause, etc.
+      const target = e.target as HTMLElement | null;
+      const inEditable =
+        !!target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable);
+      if (inEditable) return;
+
       if (e.key === 'z' && (e.ctrlKey || e.metaKey) && e.shiftKey) {
         e.preventDefault();
         dispatch({ type: 'REDO' });

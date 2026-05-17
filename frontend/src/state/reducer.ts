@@ -1,4 +1,5 @@
 import type { ProjectState, Transform } from '../types/project';
+import { DEFAULT_CANVAS } from '../types/project';
 import type { Action } from './actions';
 import { newId } from '../utils/id';
 
@@ -29,6 +30,7 @@ export const initialState: ProjectState = {
   isPlaying: false,
   zoomLevel: 50,
   selectedClipIds: [],
+  canvas: { ...DEFAULT_CANVAS },
 };
 
 export function projectReducer(state: ProjectState, action: Action): ProjectState {
@@ -366,6 +368,14 @@ export function projectReducer(state: ProjectState, action: Action): ProjectStat
 
     case 'SET_ZOOM':
       return { ...state, zoomLevel: action.payload };
+
+    case 'SET_CANVAS': {
+      // Clamp to reasonable bounds and even dimensions (h264 requires even).
+      const w = Math.max(64, Math.round(action.payload.width / 2) * 2);
+      const h = Math.max(64, Math.round(action.payload.height / 2) * 2);
+      if (state.canvas.width === w && state.canvas.height === h) return state;
+      return { ...state, canvas: { width: w, height: h } };
+    }
 
     case 'SELECT_CLIP':
       return { ...state, selectedClipIds: action.payload };

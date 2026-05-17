@@ -147,6 +147,33 @@ export interface Track {
   clips: string[];
 }
 
+/** Project-level canvas size. Drives both the preview viewport and the
+ *  export resolution — WYSIWYG. */
+export interface CanvasSize {
+  width: number;
+  height: number;
+}
+
+export interface CanvasPreset {
+  key: string;
+  label: string;
+  hint: string;
+  size: CanvasSize;
+}
+
+export const CANVAS_PRESETS: CanvasPreset[] = [
+  { key: '16:9-720',  label: '16:9 · 720p',  hint: 'Widescreen 1280×720',  size: { width: 1280, height: 720 } },
+  { key: '16:9-1080', label: '16:9 · 1080p', hint: 'Widescreen 1920×1080', size: { width: 1920, height: 1080 } },
+  { key: '16:9-480',  label: '16:9 · 480p',  hint: 'Widescreen 854×480',   size: { width: 854,  height: 480 } },
+  { key: '9:16-720',  label: '9:16 · Phone', hint: 'Vertical 720×1280',    size: { width: 720,  height: 1280 } },
+  { key: '9:16-1080', label: '9:16 · Phone HD', hint: 'Vertical 1080×1920', size: { width: 1080, height: 1920 } },
+  { key: '1:1-1080',  label: '1:1 · Square', hint: 'Square 1080×1080',     size: { width: 1080, height: 1080 } },
+  { key: '4:5-1080',  label: '4:5 · Portrait', hint: 'Portrait 1080×1350', size: { width: 1080, height: 1350 } },
+  { key: '21:9-1080', label: '21:9 · Cinema', hint: 'Ultrawide 2560×1080', size: { width: 2560, height: 1080 } },
+];
+
+export const DEFAULT_CANVAS: CanvasSize = CANVAS_PRESETS[0].size;
+
 export interface ProjectState {
   projectName: string;
   mediaFiles: Record<string, MediaFile>;
@@ -157,4 +184,5 @@ export interface ProjectState {
   isPlaying: boolean;
   zoomLevel: number;
   selectedClipIds: string[];
+  canvas: CanvasSize;
 }

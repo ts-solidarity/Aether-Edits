@@ -4,8 +4,6 @@ import type { Clip, ImageClip, ProjectState, TextClip, Transform, VideoClip } fr
 import { FONT_FAMILIES, clipDuration } from '../../types/project';
 import { CanvasOverlay, type PendingTransform } from './CanvasOverlay';
 
-const CANVAS_W = 854;
-const CANVAS_H = 480;
 const ACTIVE_WINDOW_SECONDS = 3;
 const ADJACENCY_EPS = 0.01;
 
@@ -240,6 +238,43 @@ export function PreviewPanel() {
   const pendingTransformRef = useRef<PendingTransform | null>(null);
   pendingTransformRef.current = pendingTransform;
 
+  // When the user double-clicks a text clip we hide its canvas-rendered text
+  // and let CanvasOverlay show an inline input instead. Cleared on blur/Enter.
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const editingTextIdRef = useRef<string | null>(null);
+  editingTextIdRef.current = editingTextId;
+
+  // Wrapper size = the largest box that fits the available preview area while
+  // preserving the project's canvas aspect ratio. JS-driven because CSS can't
+  // do "aspect-ratio capped by both max-width and max-height" cleanly across
+  // arbitrary aspects.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [wrapperSize, setWrapperSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const recompute = () => {
+      const cs = getComputedStyle(el);
+      const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+      const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+      const W = Math.max(0, el.clientWidth - padX);
+      const H = Math.max(0, el.clientHeight - padY);
+      if (W <= 0 || H <= 0) return;
+      const aspect = state.canvas.width / Math.max(1, state.canvas.height);
+      let w = W;
+      let h = W / aspect;
+      if (h > H) {
+        h = H;
+        w = H * aspect;
+      }
+      setWrapperSize({ w: Math.floor(w), h: Math.floor(h) });
+    };
+    recompute();
+    const ro = new ResizeObserver(recompute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [state.canvas.width, state.canvas.height]);
+
   const hasClips = Object.keys(state.clips).length > 0;
   const totalDuration = getTimelineDuration(state.clips);
 
@@ -399,6 +434,7 @@ export function PreviewPanel() {
           const img = imageRefs.current.get(clip.mediaFileId);
           if (img) drawImageClip(ctx, img, clip, canvas.width, canvas.height, override);
         } else {
+          if (editingTextIdRef.current === clip.id) continue;
           drawTextClip(ctx, clip as TextClip, canvas.width, canvas.height, override);
         }
       }
@@ -497,6 +533,7 @@ export function PreviewPanel() {
             drawImageClip(ctx, img, clip, canvas.width, canvas.height, override);
           }
         } else {
+          if (editingTextIdRef.current === clip.id) continue;
           ctx.globalAlpha = alpha;
           const override = pt && pt.clipId === clip.id ? pt.transform : undefined;
           drawTextClip(ctx, clip as TextClip, canvas.width, canvas.height, override);
@@ -553,10 +590,11 @@ export function PreviewPanel() {
 
   return (
     <div className="preview-panel">
-      <div className="preview-canvas-container">
+      <div className="preview-canvas-container" ref={containerRef}>
         {hasClips ? (
           <div
             className="preview-canvas-wrapper"
+            style={{ width: wrapperSize.w || undefined, height: wrapperSize.h || undefined }}
             onContextMenu={(e) => {
               e.preventDefault();
               const W = 220;
@@ -570,13 +608,13 @@ export function PreviewPanel() {
             <canvas
               ref={canvasRef}
               className="preview-canvas"
-              width={CANVAS_W}
-              height={CANVAS_H}
+              width={state.canvas.width}
+              height={state.canvas.height}
             />
             <CanvasOverlay
               canvasRef={canvasRef}
-              canvasW={CANVAS_W}
-              canvasH={CANVAS_H}
+              canvasW={state.canvas.width}
+              canvasH={state.canvas.height}
               activeClips={activeClips}
               selectedClipIds={state.selectedClipIds}
               isPlaying={state.isPlaying}
@@ -584,6 +622,8 @@ export function PreviewPanel() {
               mediaFiles={state.mediaFiles}
               pendingTransform={pendingTransform}
               setPendingTransform={setPendingTransform}
+              editingTextId={editingTextId}
+              setEditingTextId={setEditingTextId}
             />
           </div>
         ) : (

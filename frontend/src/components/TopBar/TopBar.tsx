@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react';
 import { useProject } from '../../state/ProjectContext';
+import { CANVAS_PRESETS } from '../../types/project';
 
 export function TopBar({ onExport }: { onExport: () => void }) {
-  const { dispatch, canUndo, canRedo, flushSave } = useProject();
+  const { state, dispatch, canUndo, canRedo, flushSave } = useProject();
   const [justSaved, setJustSaved] = useState(false);
   const savedTimerRef = useRef<number | null>(null);
 
@@ -18,6 +19,13 @@ export function TopBar({ onExport }: { onExport: () => void }) {
     }, 1500);
   };
 
+  // Match the project's current canvas to a preset key (for the dropdown's
+  // active value). Falls back to the first preset's key if no match.
+  const activeKey =
+    CANVAS_PRESETS.find(
+      (p) => p.size.width === state.canvas.width && p.size.height === state.canvas.height
+    )?.key ?? '';
+
   return (
     <header className="topbar">
       <div className="topbar-left">
@@ -31,6 +39,31 @@ export function TopBar({ onExport }: { onExport: () => void }) {
       </div>
 
       <div className="topbar-center">
+        <label className="topbar-canvas-picker" title="Project canvas — preview & export use this">
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            Canvas
+          </span>
+          <select
+            value={activeKey}
+            onChange={(e) => {
+              const preset = CANVAS_PRESETS.find((p) => p.key === e.target.value);
+              if (preset) {
+                dispatch({ type: 'SET_CANVAS', payload: { ...preset.size } });
+              }
+            }}
+          >
+            {CANVAS_PRESETS.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.label} · {p.size.width}×{p.size.height}
+              </option>
+            ))}
+            {activeKey === '' && (
+              <option value="" disabled>
+                Custom · {state.canvas.width}×{state.canvas.height}
+              </option>
+            )}
+          </select>
+        </label>
         <button
           className="btn btn-ghost"
           disabled={!canUndo}

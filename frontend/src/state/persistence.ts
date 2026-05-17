@@ -37,6 +37,7 @@ interface SerializedProject {
   clips: ProjectState['clips'];
   trackOrder: string[];
   mediaFiles: Record<string, SerializedMediaFile>;
+  canvas?: { width: number; height: number };
 }
 
 const ALLOWED_TRANSITION_KINDS = new Set<TransitionKind>([
@@ -135,6 +136,7 @@ export function serialize(state: ProjectState): string {
     clips: state.clips,
     trackOrder: state.trackOrder,
     mediaFiles,
+    canvas: state.canvas,
   };
   return JSON.stringify(payload);
 }
@@ -232,6 +234,12 @@ export function deserialize(raw: string): ProjectState | null {
       }
     }
 
+    const persistedCanvas = d.canvas;
+    const canvas =
+      persistedCanvas && persistedCanvas.width > 0 && persistedCanvas.height > 0
+        ? { width: persistedCanvas.width, height: persistedCanvas.height }
+        : { ...initialState.canvas };
+
     return {
       ...initialState,
       projectName: d.projectName ?? initialState.projectName,
@@ -239,6 +247,7 @@ export function deserialize(raw: string): ProjectState | null {
       clips,
       trackOrder: d.trackOrder ?? initialState.trackOrder,
       mediaFiles,
+      canvas,
     };
   } catch {
     return null;

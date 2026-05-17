@@ -252,7 +252,29 @@ input, select, textarea {
 }
 
 .topbar-left { display: flex; align-items: center; gap: 14px; }
-.topbar-center { display: flex; align-items: center; gap: 6px; }
+.topbar-center { display: flex; align-items: center; gap: 10px; }
+
+.topbar-canvas-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: url('/cursors/pointer.svg') 8 4, pointer;
+}
+
+.topbar-canvas-picker select {
+  background: transparent;
+  color: var(--text-primary);
+  border: none;
+  outline: none;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: url('/cursors/pointer.svg') 8 4, pointer;
+}
 .topbar-right { display: flex; align-items: center; gap: 8px; }
 
 .topbar-logo {
@@ -862,22 +884,24 @@ input, select, textarea {
 }
 
 .preview-canvas-wrapper {
+  /* Width/height are set inline from PreviewPanel based on the project canvas
+     aspect and the available container size, so the canvas scales correctly
+     for both landscape and portrait. */
   position: relative;
-  display: inline-block;
-  max-width: 100%;
-  max-height: 100%;
+  flex: 0 0 auto;
+  display: block;
 }
 
 .preview-canvas {
-  max-width: 100%;
-  max-height: 100%;
+  display: block;
+  width: 100%;
+  height: 100%;
   background: #000;
   border-radius: var(--radius-md);
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.06),
     0 20px 60px rgba(0, 0, 0, 0.55),
     0 0 80px rgba(160, 107, 255, 0.12);
-  display: block;
 }
 
 .canvas-overlay {
@@ -937,6 +961,24 @@ input, select, textarea {
   pointer-events: auto;
   cursor: grab;
   box-shadow: 0 0 8px rgba(0, 224, 255, 0.6);
+}
+
+.overlay-text-editor {
+  background: rgba(15, 9, 30, 0.7);
+  border: 2px solid var(--accent-secondary);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: 'Aether Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-weight: 700;
+  text-align: center;
+  outline: none;
+  padding: 0 8px;
+  box-shadow: 0 0 18px rgba(0, 224, 255, 0.4), 0 8px 24px rgba(0, 0, 0, 0.45);
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+  pointer-events: auto;
+  transform-origin: center center;
 }
 
 .overlay-handle-rotate::before {
