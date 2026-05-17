@@ -506,8 +506,15 @@ export function buildExportCommand(input: BuildExportInput): BuiltCommand {
       const isFreeRun = run.length === 1 && run[0].fit === 'free';
       const tpadColor = isFreeRun ? 'black@0' : 'black';
       const finalLabel = `vr_${safeLabel(track.trackId)}_${runIdx}`;
+      // Explicit start_mode=add:stop_mode=add: FFmpeg 6.x defaults to `add`
+      // already, but historic versions (and some forks) default to `clone`,
+      // which copies the first/last frame into the pad region. Cloned pad
+      // frames can bleed visibly during a gap if the overlay's `enable` clause
+      // is ever soft-gated. Being explicit removes all doubt.
       filters.push(
-        `[${runVideoLabel}]tpad=start_duration=${runTlStart.toFixed(4)}:stop_duration=${stopPad.toFixed(4)}:color=${tpadColor}[${finalLabel}]`
+        `[${runVideoLabel}]tpad=start_duration=${runTlStart.toFixed(4)}:` +
+        `stop_duration=${stopPad.toFixed(4)}:start_mode=add:stop_mode=add:` +
+        `color=${tpadColor}[${finalLabel}]`
       );
       videoClipLabels.push({
         label: finalLabel,

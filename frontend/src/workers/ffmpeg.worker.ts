@@ -80,8 +80,10 @@ async function cleanupStaleFsEntries(ff: FFmpeg): Promise<void> {
   } catch {
     return;
   }
+  // Live font set (keep in lockstep with FONT_FILE_BY_FAMILY). text.ttf was
+  // renamed to sans.ttf during the font-family work; no longer referenced.
   const protect = new Set([
-    'text.ttf', 'sans.ttf', 'serif.ttf', 'mono.ttf', 'display.ttf', 'handwriting.ttf',
+    'sans.ttf', 'serif.ttf', 'mono.ttf', 'display.ttf', 'handwriting.ttf',
     '.', '..', 'tmp', 'home', 'dev', 'proc',
   ]);
   for (const entry of entries) {
