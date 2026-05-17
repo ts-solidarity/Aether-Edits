@@ -267,6 +267,11 @@ export function TimelinePanel() {
     y: number;
     clipId: string;
   } | null>(null);
+  const [timelineCtx, setTimelineCtx] = useState<{
+    x: number;
+    y: number;
+    time: number;
+  } | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const dragRef = useRef<DragState | null>(null);
   dragRef.current = drag;
@@ -509,12 +514,33 @@ export function TimelinePanel() {
     []
   );
 
-  // Close context menu on click outside
+  // Close context menus on click outside.
   useEffect(() => {
-    const handler = () => setContextMenu(null);
+    const handler = () => { setContextMenu(null); setTimelineCtx(null); };
     window.addEventListener('click', handler);
     return () => window.removeEventListener('click', handler);
   }, []);
+
+  // Right-click on the empty timeline area opens a contextual menu.
+  const handleTimelineContextMenu = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('.clip, .clip-trim-handle, .clip-gap-slot')) return;
+    e.preventDefault();
+    setContextMenu(null);
+    const scroll = scrollRef.current;
+    let time = 0;
+    if (scroll) {
+      const rect = scroll.getBoundingClientRect();
+      const scrollLeft = scroll.scrollLeft;
+      time = Math.max(0, (e.clientX - rect.left + scrollLeft) / zoom);
+    }
+    const MENU_W = 220;
+    const MENU_H = 168;
+    const margin = 8;
+    const x = Math.min(e.clientX, window.innerWidth - MENU_W - margin);
+    const y = Math.min(e.clientY, window.innerHeight - MENU_H - margin);
+    setTimelineCtx({ x: Math.max(margin, x), y: Math.max(margin, y), time });
+  };
 
   // Handle dropping media onto a track: place the clip at the cursor X, clamped
   // into the nearest free gap on the target track.
@@ -692,15 +718,46 @@ export function TimelinePanel() {
     }
   }
 
-  // Click on empty timeline area to set playhead
-  const handleTimelineClick = (e: React.MouseEvent) => {
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const scrollLeft = scrollRef.current?.scrollLeft ?? 0;
-    const x = e.clientX - rect.left + scrollLeft;
+  // Click + drag on empty timeline area sets / scrubs the playhead.
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const scrubFrameRef = useRef<number>(0);
+
+  const setPlayheadFromClientX = useCallback((clientX: number) => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const rect = scroll.getBoundingClientRect();
+    const scrollLeft = scroll.scrollLeft;
+    const x = clientX - rect.left + scrollLeft;
     const time = Math.max(0, x / zoom);
     dispatch({ type: 'SET_PLAYHEAD', payload: time });
+  }, [dispatch, zoom]);
+
+  const handleTimelineMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    // If the mousedown originated on an interactive child (clip/handle), don't
+    // hijack it — those have their own handlers and stopPropagation.
+    const target = e.target as HTMLElement;
+    if (target.closest('.clip, .clip-trim-handle, .clip-gap-slot')) return;
+    setIsScrubbing(true);
+    setPlayheadFromClientX(e.clientX);
     dispatch({ type: 'SELECT_CLIP', payload: [] });
   };
+
+  useEffect(() => {
+    if (!isScrubbing) return;
+    const onMove = (ev: MouseEvent) => {
+      cancelAnimationFrame(scrubFrameRef.current);
+      scrubFrameRef.current = requestAnimationFrame(() => setPlayheadFromClientX(ev.clientX));
+    };
+    const onUp = () => setIsScrubbing(false);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      cancelAnimationFrame(scrubFrameRef.current);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isScrubbing, setPlayheadFromClientX]);
 
   // Render ruler marks
   const rulerMarks = [];
@@ -803,7 +860,8 @@ export function TimelinePanel() {
         <div
           className="timeline-scroll"
           ref={scrollRef}
-          onClick={handleTimelineClick}
+          onMouseDown={handleTimelineMouseDown}
+          onContextMenu={handleTimelineContextMenu}
         >
           <div
             className="timeline-content"
@@ -1085,6 +1143,55 @@ export function TimelinePanel() {
           <button className="context-menu-item danger" onClick={handleDelete}>
             <span>🗑️ Delete</span>
             <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 11 }}>Del</span>
+          </button>
+        </div>
+      )}
+
+      {/* Empty-area context menu */}
+      {timelineCtx && (
+        <div
+          className="context-menu"
+          style={{ left: timelineCtx.x, top: timelineCtx.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              dispatch({ type: 'SET_PLAYHEAD', payload: timelineCtx.time });
+              setTimelineCtx(null);
+            }}
+          >
+            <span>⏵ Set playhead here</span>
+          </button>
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              dispatch({
+                type: 'ADD_TRACK',
+                payload: { name: `Track ${state.trackOrder.length + 1}` },
+              });
+              setTimelineCtx(null);
+            }}
+          >
+            <span>＋ Add track</span>
+          </button>
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              dispatch({ type: 'SET_ZOOM', payload: 50 });
+              setTimelineCtx(null);
+            }}
+          >
+            <span>🔍 Reset zoom</span>
+          </button>
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              dispatch({ type: 'SET_PLAYHEAD', payload: 0 });
+              setTimelineCtx(null);
+            }}
+          >
+            <span>⏮ Jump to start</span>
           </button>
         </div>
       )}

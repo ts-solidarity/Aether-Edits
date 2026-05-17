@@ -1,6 +1,6 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 import { useProject } from '../../state/ProjectContext';
-import type { MediaFile, TextClip } from '../../types/project';
+import type { ImageClip, MediaFile, TextClip, VideoClip } from '../../types/project';
 import { DEFAULT_TRANSFORM } from '../../types/project';
 import { newId } from '../../utils/id';
 import { getOrCreateObjectUrl, saveFile } from '../../services/mediaStore';
@@ -17,6 +17,57 @@ export function Sidebar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [loadingFiles, setLoadingFiles] = useState<Set<string>>(new Set());
+  const [fileCtxMenu, setFileCtxMenu] = useState<{ x: number; y: number; mediaId: string } | null>(null);
+
+  useEffect(() => {
+    if (!fileCtxMenu) return;
+    const onClick = () => setFileCtxMenu(null);
+    window.addEventListener('click', onClick);
+    return () => window.removeEventListener('click', onClick);
+  }, [fileCtxMenu]);
+
+  const addMediaToTimeline = useCallback((media: MediaFile) => {
+    const trackId = state.trackOrder[0];
+    if (!trackId) return;
+    const tlStart = state.playheadPosition;
+    const clip: VideoClip | ImageClip =
+      media.kind === 'image'
+        ? {
+            id: newId('clip'),
+            kind: 'image',
+            mediaFileId: media.id,
+            sourceStart: 0,
+            sourceEnd: media.duration,
+            timelineStart: tlStart,
+            trackId,
+            fit: 'free',
+            transform: { ...DEFAULT_TRANSFORM },
+            color: null,
+            speed: 1,
+            transitionOut: null,
+          }
+        : {
+            id: newId('clip'),
+            kind: 'video',
+            mediaFileId: media.id,
+            sourceStart: 0,
+            sourceEnd: media.duration,
+            timelineStart: tlStart,
+            trackId,
+            volume: 1,
+            muted: false,
+            pan: 0,
+            duckSourceClipId: null,
+            duckAmount: 0.6,
+            fit: 'contain',
+            transform: { ...DEFAULT_TRANSFORM },
+            color: null,
+            speed: 1,
+            transitionOut: null,
+          };
+    dispatch({ type: 'ADD_CLIP', payload: { clip, trackId } });
+    dispatch({ type: 'SELECT_CLIP', payload: [clip.id] });
+  }, [state.trackOrder, state.playheadPosition, dispatch]);
 
   const handleFiles = useCallback(
     (files: FileList) => {
@@ -264,6 +315,18 @@ export function Sidebar() {
                           }
                           e.dataTransfer.setData('mediaFileId', f.id);
                         }}
+                        onDoubleClick={() => f.status === 'ready' && addMediaToTimeline(f)}
+                        onContextMenu={(e) => {
+                          if (f.status !== 'ready') return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const W = 180;
+                          const H = 80;
+                          const margin = 8;
+                          const x = Math.min(e.clientX, window.innerWidth - W - margin);
+                          const y = Math.min(e.clientY, window.innerHeight - H - margin);
+                          setFileCtxMenu({ x: Math.max(margin, x), y: Math.max(margin, y), mediaId: f.id });
+                        }}
                       >
                         <div className="file-item-icon">▶</div>
                         <div className="file-item-info">
@@ -315,6 +378,25 @@ export function Sidebar() {
 
         {tab === 'inspect' && <Inspector />}
       </div>
+
+      {fileCtxMenu && (
+        <div
+          className="context-menu"
+          style={{ left: fileCtxMenu.x, top: fileCtxMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              const m = state.mediaFiles[fileCtxMenu.mediaId];
+              if (m) addMediaToTimeline(m);
+              setFileCtxMenu(null);
+            }}
+          >
+            <span>＋ Add to timeline at playhead</span>
+          </button>
+        </div>
+      )}
     </aside>
   );
 }

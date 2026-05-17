@@ -172,6 +172,11 @@ export function CanvasOverlay({
     if (!selectedClipIds.includes(clip.id)) {
       dispatch({ type: 'SELECT_CLIP', payload: [clip.id] });
     }
+    // Auto-promote video/image clips out of contain/cover so the transform
+    // takes effect during the drag.
+    if ((clip.kind === 'video' || clip.kind === 'image') && clip.fit !== 'free') {
+      dispatch({ type: 'SET_CLIP_FIT', payload: { clipId: clip.id, fit: 'free' } });
+    }
   };
 
   return (
@@ -186,13 +191,17 @@ export function CanvasOverlay({
     >
       {displaySize.w > 0 &&
         activeClips.map((clip) => {
-          // Text clips are always interactive; video/image clips only when fit === 'free'.
-          if ((clip.kind === 'video' || clip.kind === 'image') && clip.fit !== 'free') return null;
+          // Text clips: always interactive (small bbox, hard to find otherwise).
+          // Video/image clips: handles visible when selected OR when already in
+          // free fit (so the user can see what's resizable).
+          const isSelected = selectedClipIds.includes(clip.id);
+          if (clip.kind === 'video' || clip.kind === 'image') {
+            if (!isSelected && clip.fit !== 'free') return null;
+          }
           const t =
             pendingTransform && pendingTransform.clipId === clip.id
               ? pendingTransform.transform
               : clip.transform;
-          const isSelected = selectedClipIds.includes(clip.id);
           const box =
             clip.kind === 'text'
               ? measureTextBox(clip, t, canvasH, displaySize.h)

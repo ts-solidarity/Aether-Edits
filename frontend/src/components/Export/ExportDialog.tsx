@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useProject } from '../../state/ProjectContext';
-import { useExport } from '../../hooks/useExport';
+import { useExport, type ResolutionPreset } from '../../hooks/useExport';
 import type { QualityPreset } from '../../services/filterGraph';
 
 interface ExportDialogProps {
@@ -14,10 +14,19 @@ const QUALITY_OPTIONS: { value: QualityPreset; label: string; hint: string }[] =
   { value: 'quality', label: 'Quality', hint: 'medium preset · CRF 22 · much slower on wasm' },
 ];
 
+const RESOLUTION_OPTIONS: { value: ResolutionPreset; label: string; hint: string }[] = [
+  { value: 'auto', label: 'Auto', hint: 'derive from source media (16:9)' },
+  { value: '480p', label: '480p', hint: '854 × 480' },
+  { value: '720p', label: '720p', hint: '1280 × 720' },
+  { value: '1080p', label: '1080p', hint: '1920 × 1080' },
+  { value: '4k', label: '4K', hint: '3840 × 2160 · slow' },
+];
+
 export function ExportDialog({ open, onClose }: ExportDialogProps) {
   const { state } = useProject();
   const { exportState, startExportFlow, reset, readiness } = useExport();
   const [quality, setQuality] = useState<QualityPreset>('fast');
+  const [resolution, setResolution] = useState<ResolutionPreset>('auto');
 
   // Revoke the download blob URL when the dialog closes or phase leaves 'done'.
   useEffect(() => {
@@ -85,6 +94,27 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
                 <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
                   Export runs in your browser with FFmpeg.wasm — nothing is uploaded.
                 </p>
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>
+                    Resolution
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6 }}>
+                    {RESOLUTION_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        className={`inspector-chip ${resolution === opt.value ? 'active' : ''}`}
+                        onClick={() => setResolution(opt.value)}
+                        title={opt.hint}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                    {RESOLUTION_OPTIONS.find((r) => r.value === resolution)?.hint}
+                  </div>
+                </div>
                 <div style={{ marginBottom: 20 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>
                     Quality / Speed
@@ -113,7 +143,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               </button>
               <button
                 className="btn btn-primary"
-                onClick={() => startExportFlow(quality)}
+                onClick={() => startExportFlow(quality, resolution)}
                 disabled={!hasClips || !readiness.allReady}
               >
                 Export
@@ -184,7 +214,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               <button className="btn btn-secondary" onClick={handleClose}>
                 Close
               </button>
-              <button className="btn btn-primary" onClick={() => startExportFlow(quality)}>
+              <button className="btn btn-primary" onClick={() => startExportFlow(quality, resolution)}>
                 Retry
               </button>
             </div>

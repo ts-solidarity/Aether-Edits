@@ -543,11 +543,30 @@ export function PreviewPanel() {
 
   const activeClips = hasClips ? findActiveClipsAtTime(state, state.playheadPosition) : [];
 
+  const [canvasCtx, setCanvasCtx] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (!canvasCtx) return;
+    const onClick = () => setCanvasCtx(null);
+    window.addEventListener('click', onClick);
+    return () => window.removeEventListener('click', onClick);
+  }, [canvasCtx]);
+
   return (
     <div className="preview-panel">
       <div className="preview-canvas-container">
         {hasClips ? (
-          <div className="preview-canvas-wrapper">
+          <div
+            className="preview-canvas-wrapper"
+            onContextMenu={(e) => {
+              e.preventDefault();
+              const W = 220;
+              const H = 130;
+              const margin = 8;
+              const x = Math.min(e.clientX, window.innerWidth - W - margin);
+              const y = Math.min(e.clientY, window.innerHeight - H - margin);
+              setCanvasCtx({ x: Math.max(margin, x), y: Math.max(margin, y) });
+            }}
+          >
             <canvas
               ref={canvasRef}
               className="preview-canvas"
@@ -611,6 +630,69 @@ export function PreviewPanel() {
           {formatTime(state.playheadPosition)} / {formatTime(totalDuration)}
         </span>
       </div>
+
+      {canvasCtx && (
+        <div
+          className="context-menu"
+          style={{ left: canvasCtx.x, top: canvasCtx.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              if (state.selectedClipIds.length === 1) {
+                dispatch({
+                  type: 'SET_CLIP_TRANSFORM',
+                  payload: {
+                    clipId: state.selectedClipIds[0],
+                    transform: { x: 0.5, y: 0.5, scale: 1, rotation: 0 },
+                  },
+                });
+              }
+              setCanvasCtx(null);
+            }}
+            disabled={state.selectedClipIds.length !== 1}
+          >
+            <span>↺ Reset selected transform</span>
+          </button>
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              for (const c of Object.values(state.clips)) {
+                dispatch({
+                  type: 'SET_CLIP_TRANSFORM',
+                  payload: {
+                    clipId: c.id,
+                    transform: { x: 0.5, y: 0.5, scale: 1, rotation: 0 },
+                  },
+                });
+              }
+              setCanvasCtx(null);
+            }}
+          >
+            <span>↺ Reset ALL transforms</span>
+          </button>
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              dispatch({ type: 'SET_PLAYING', payload: !state.isPlaying });
+              setCanvasCtx(null);
+            }}
+          >
+            <span>{state.isPlaying ? '⏸ Pause' : '⏵ Play'}</span>
+            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 11 }}>Space</span>
+          </button>
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              dispatch({ type: 'SET_PLAYHEAD', payload: 0 });
+              setCanvasCtx(null);
+            }}
+          >
+            <span>⏮ Jump to start</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
